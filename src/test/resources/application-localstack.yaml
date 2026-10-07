@@ -1,0 +1,18 @@
+# Activated together with TestcontainersConfiguration. These must be static properties rather than
+# DynamicPropertyRegistrar entries: storage modes are decided by @ConditionalOnProperty while the
+# configuration is parsed, before dynamic properties exist.
+spring:
+  application:
+    data:
+      mode: dynamodb
+      dynamodb:
+        table: photo-album
+    storage:
+      mode: s3
+      s3:
+        bucket: photo-album-media
+  cloud:
+    aws:
+      s3:
+        # Virtual-host style would resolve to a bucket.127.0.0.1 host name LocalStack cannot serve.
+        path-style-access-enabled: true

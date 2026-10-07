@@ -1,0 +1,113 @@
+package net.samitkumar.photo_album_aws;
+
+import net.samitkumar.photo_album_aws.AlbumController.Album;
+import net.samitkumar.photo_album_aws.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.AlbumController.Share;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
+
+/**
+ * Keeps everything in process memory. The default, for local development and fast tests; data is lost on restart.
+ * Each album is replaced atomically through {@link ConcurrentHashMap#compute}, so concurrent changes cannot interleave.
+ */
+@Component
+@ConditionalOnProperty(prefix = "spring.application.data", name = "mode", havingValue = "memory", matchIfMissing = true)
+public class InMemoryAlbumRepository implements AlbumRepository {
+    private final Map<UUID, Album> albums = new ConcurrentHashMap<>();
+    private final Map<String, Share> shares = new ConcurrentHashMap<>();
+
+    @Override
+    public List<Album> findAll() {
+        return albums.values().stream().sorted(Comparator.comparing(Album::createdAt).reversed()).toList();
+    }
+
+    @Override
+    public Optional<Album> findById(UUID albumId) { return Optional.ofNullable(albums.get(albumId)); }
+
+    @Override
+    public void create(Album album) {
+        albums.put(album.id(), new Album(album.id(), album.name(), album.description(), album.createdAt(), List.of()));
+    }
+
+    @Override
+    public Optional<Album> update(UUID albumId, String name, String description) {
+        return Optional.ofNullable(albums.computeIfPresent(albumId, (id, a) -> new Album(id,
+                name == null ? a.name() : name, description == null ? a.description() : description, a.createdAt(), a.photos())));
+    }
+
+    @Override
+    public Optional<Album> delete(UUID albumId) {
+        shares.values().removeIf(share -> share.albumId().equals(albumId));
+        return Optional.ofNullable(albums.remove(albumId));
+    }
+
+    @Override
+    public boolean addPhoto(UUID albumId, Photo photo) {
+        return albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, Stream.concat(a.photos().stream(), Stream.of(photo)).toList())) != null;
+    }
+
+    @Override
+    public boolean replacePhoto(UUID albumId, Photo photo) {
+        var replaced = new AtomicBoolean();
+        albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().map(p -> {
+            if (!p.id().equals(photo.id())) return p;
+            replaced.set(true);
+            return photo;
+        }).toList()));
+        return replaced.get();
+    }
+
+    @Override
+    public boolean replacePhotoIfCurrent(UUID albumId, Photo photo, String expectedObjectKey) {
+        var replaced = new AtomicBoolean();
+        albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().map(p -> {
+            if (!p.id().equals(photo.id()) || !Objects.equals(p.objectKey(), expectedObjectKey)) return p;
+            replaced.set(true);
+            return photo;
+        }).toList()));
+        return replaced.get();
+    }
+
+    @Override
+    public Optional<Photo> updatePhotoStatus(UUID albumId, UUID photoId, PhotoStatus expected, PhotoStatus next) {
+        var updated = new AtomicReference<Photo>();
+        albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().map(p -> {
+            if (!p.id().equals(photoId) || p.status() != expected) return p;
+            updated.set(p.withStatus(next));
+            return updated.get();
+        }).toList()));
+        return Optional.ofNullable(updated.get());
+    }
+
+    @Override
+    public Optional<Photo> deletePhoto(UUID albumId, UUID photoId) {
+        var removed = new AtomicReference<Photo>();
+        albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().filter(p -> {
+            if (!p.id().equals(photoId)) return true;
+            removed.set(p);
+            return false;
+        }).toList()));
+        return Optional.ofNullable(removed.get());
+    }
+
+    @Override
+    public void saveShare(String token, Share share) { shares.put(token, share); }
+
+    @Override
+    public Optional<Share> findShare(String token) { return Optional.ofNullable(shares.get(token)); }
+
+    @Override
+    public void deleteShare(String token) { shares.remove(token); }
+
+    private static Album withPhotos(Album a, List<Photo> photos) {
+        var sorted = photos.stream().sorted(Comparator.comparing(Photo::uploadedAt).thenComparing(p -> p.id().toString())).toList();
+        return new Album(a.id(), a.name(), a.description(), a.createdAt(), sorted);
+    }
+}

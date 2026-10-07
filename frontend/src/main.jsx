@@ -1,0 +1,11 @@
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import App from './ui/App.jsx'
+import '@fontsource-variable/inter/opsz.css'
+import '@fontsource-variable/fraunces/opsz.css'
+import './mobile-first.css'
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode><BrowserRouter><App /></BrowserRouter></React.StrictMode>,
+)

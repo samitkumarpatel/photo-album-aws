@@ -1,0 +1,14 @@
+# Activated by StreamLambdaHandler. Data and storage modes still come from the PHOTO_ALBUM_* environment variables.
+spring:
+  main:
+    banner-mode: off
+    # Keep eager initialisation: SnapStart snapshots after init, so everything built then is free on restore.
+    lazy-initialization: false
+  application:
+    # CloudFront serves the SPA from S3; the function only answers /api/**.
+    spa:
+      enabled: false
+  web:
+    resources:
+      # No static resource handler either; the zip leaves static/** out.
+      add-mappings: false

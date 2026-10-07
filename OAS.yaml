@@ -1,0 +1,848 @@
+openapi: 3.1.0
+info:
+  title: Stillroom Photo Album API
+  version: 1.0.0
+  description: >-
+    REST API for creating albums, uploading and browsing image and video media,
+    creating expiring view-only share links, and retrieving shared albums.
+servers:
+  - url: /
+    description: Same origin as the Spring Boot application
+tags:
+  - name: Albums
+  - name: Media
+  - name: Sharing
+  - name: Shared albums
+paths:
+  /api/albums:
+    get:
+      tags: [Albums]
+      operationId: listAlbums
+      summary: List albums
+      responses:
+        '200':
+          description: Albums ordered newest first. Each album includes media summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Album'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [Albums]
+      operationId: createAlbum
+      summary: Create an album
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAlbumRequest'
+            example:
+              name: Weekend by the sea
+              description: A few days away with friends
+      responses:
+        '201':
+          description: Album created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Album'
+        '400':
+          description: Request body is invalid or the album name is blank.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+    get:
+      tags: [Albums]
+      operationId: getAlbum
+      summary: Get an album and its media summaries
+      responses:
+        '200':
+          description: Album details. Storage object keys are not returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Album'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    patch:
+      tags: [Albums]
+      operationId: updateAlbum
+      summary: Rename an album or change its description
+      description: Fields that are omitted or null keep their current value.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAlbumRequest'
+            example:
+              name: Lisbon, summer 2026
+      responses:
+        '200':
+          description: Album updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Album'
+        '400':
+          description: The new album name is blank.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [Albums]
+      operationId: deleteAlbum
+      summary: Delete an album
+      description: >-
+        Removes the album, deletes all of its media objects (every original version and every
+        derivative) from the configured storage, and revokes every share link for it.
+      responses:
+        '204':
+          description: Album deleted. No response body.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}/uploads:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+    post:
+      tags: [Media]
+      operationId: createUpload
+      summary: Start an upload (step 1 of 3)
+      description: >-
+        Announces one image or video. The API records the photo with status UPLOADING and returns a URL
+        locked to exactly this content type and size (an S3 presigned PUT on AWS, an API route locally).
+        Step 2: PUT the raw file bytes to uploadUrl with the returned headers (do not use multipart).
+        Step 3: call the complete endpoint. Upload URLs expire after about 15 minutes; photos still
+        UPLOADING after 1 hour are hidden from listings and removed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadRequest'
+            example:
+              filename: beach.jpg
+              contentType: image/jpeg
+              size: 2483112
+      responses:
+        '201':
+          description: Upload URL issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntent'
+        '400':
+          description: size is missing or not greater than zero.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: size exceeds 100 MB (104857600 bytes).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: contentType is not a concrete image/* or video/* type, or is image/svg+xml.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}/uploads/{photoId}/complete:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+      - $ref: '#/components/parameters/PhotoId'
+    post:
+      tags: [Media]
+      operationId: completeUpload
+      summary: Finish an upload (step 3 of 3)
+      description: >-
+        Confirms the PUT finished. The API checks that the object exists with the announced size, moves the
+        photo from UPLOADING to PROCESSING, and starts processing (metadata, thumbnail and display
+        derivatives). Idempotent: if the photo is already PROCESSING, READY or FAILED it is returned unchanged.
+      responses:
+        '200':
+          description: The photo, usually with status PROCESSING. Poll the album until it is READY or FAILED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The file has not been uploaded yet, or its stored size differs from the announced size.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/uploads/{albumId}/{photoId}:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+      - $ref: '#/components/parameters/PhotoId'
+    put:
+      tags: [Media]
+      operationId: localUpload
+      summary: Receive an upload (local stand-in for S3 presigned PUT)
+      description: >-
+        Exists only with in-memory storage. Clients never build this URL: they use uploadUrl from
+        createUpload as-is. It checks what S3 checks for a presigned PUT: signature, expiry, exact
+        Content-Type and exact Content-Length.
+      parameters:
+        - name: expires
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: signature
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          image/*:
+            schema:
+              type: string
+              format: binary
+          video/*:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Stored.
+        '400':
+          description: Content-Type or length differs from the upload intent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: Signature invalid or expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The upload was already completed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /api/albums/{albumId}/photos:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+    get:
+      tags: [Media]
+      operationId: listAlbumMedia
+      summary: List an album's photos and videos
+      responses:
+        '200':
+          description: Media summaries in album insertion order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Media'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    post:
+      tags: [Media]
+      operationId: uploadAlbumMedia
+      deprecated: true
+      summary: Upload an image or video to an album (deprecated)
+      description: >-
+        Deprecated: use createUpload and completeUpload. On AWS the API runs on Lambda, whose 6 MB
+        request limit makes this endpoint unusable for most files. Uploads one media file as multipart
+        form data (up to 100 MB), stores it as originals/{albumId}/{photoId}/v1.{ext}, and starts
+        processing; the photo is returned with status PROCESSING.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: One image/* or video/* file, up to 100 MB.
+      responses:
+        '201':
+          description: Media uploaded. The storage object key is not returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '400':
+          description: The file is missing or empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: The uploaded file content type is not image/* or video/*.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: File exceeds the configured 100 MB upload limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}/photos/{photoId}:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+      - $ref: '#/components/parameters/PhotoId'
+    get:
+      tags: [Media]
+      operationId: getAlbumMedia
+      summary: Load an image or video from an album
+      description: >-
+        Prefer the URLs in the photo's urls field. With S3 storage this route answers 302 to a signed
+        S3 or CloudFront URL; with in-memory storage it streams the bytes. A missing derivative falls
+        back to the display image, then the original.
+      parameters:
+        - $ref: '#/components/parameters/MediaSize'
+        - $ref: '#/components/parameters/Download'
+        - $ref: '#/components/parameters/CacheBuster'
+      responses:
+        '302':
+          $ref: '#/components/responses/MediaRedirect'
+        '400':
+          description: Unknown size.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '200':
+          description: Media bytes streamed from the configured media store (in-memory storage only).
+          headers:
+            Content-Length:
+              description: Original media size in bytes.
+              schema:
+                type: integer
+                format: int64
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+            video/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    put:
+      tags: [Media]
+      operationId: replaceAlbumPhoto
+      summary: Replace a photo with an edited version
+      description: >-
+        Stores the new bytes as the next original version (originals/{albumId}/{photoId}/v{n+1}.{ext}),
+        keeping earlier versions, while keeping the photo id and uploadedAt. Sets editedAt, clears the
+        dimensions, sets status PROCESSING and starts processing again; thumbnail and display URLs keep
+        showing the previous version until new derivatives are ready. Only images can
+        be replaced, and only with an image. Still multipart, so limited to 6 MB on AWS.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: One image/* file, up to 100 MB. Its filename becomes the photo filename.
+      responses:
+        '200':
+          description: Photo replaced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Media'
+        '400':
+          description: The file is missing or empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          description: The new file is not an image, or the existing media is a video.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      tags: [Media]
+      operationId: deleteAlbumMedia
+      summary: Delete a photo or video
+      description: >-
+        Removes the album entry and deletes every original version and every derivative from storage.
+        Also cancels an upload: works for UPLOADING photos whether or not the file was already PUT.
+      responses:
+        '204':
+          description: Media deleted. No response body.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}/shares:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+    post:
+      tags: [Sharing]
+      operationId: createAlbumShare
+      summary: Create an expiring, view-only share link
+      description: >-
+        Creates a random token for an album. Anyone with the token can view the
+        album and its media until expiresAt. Supported units are HOURS, DAYS,
+        WEEKS, MONTHS, and YEARS. amount must be from 1 through 365.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateShareRequest'
+            examples:
+              twoWeeks:
+                value:
+                  amount: 2
+                  unit: WEEKS
+              oneMonth:
+                value:
+                  amount: 1
+                  unit: MONTHS
+      responses:
+        '201':
+          description: Share link created. Construct the browser URL as /share/{token}.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareResponse'
+        '400':
+          description: Invalid amount or duration unit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/shared/{token}:
+    parameters:
+      - $ref: '#/components/parameters/ShareToken'
+    get:
+      tags: [Shared albums]
+      operationId: getSharedAlbum
+      summary: Get an album using a share token
+      description: >-
+        Only photos with status PROCESSING or READY are included. Media URLs expire no later than the
+        share link.
+      responses:
+        '200':
+          description: Shared album and media summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Album'
+        '404':
+          description: Share token is unknown.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '410':
+          description: Share link has expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/shared/{token}/photos/{photoId}:
+    parameters:
+      - $ref: '#/components/parameters/ShareToken'
+      - $ref: '#/components/parameters/PhotoId'
+    get:
+      tags: [Shared albums]
+      operationId: getSharedAlbumMedia
+      summary: Load shared album media using a share token
+      description: Same behavior as getAlbumMedia; signed URLs expire no later than the share link.
+      parameters:
+        - $ref: '#/components/parameters/MediaSize'
+        - $ref: '#/components/parameters/Download'
+        - $ref: '#/components/parameters/CacheBuster'
+      responses:
+        '302':
+          $ref: '#/components/responses/MediaRedirect'
+        '200':
+          description: Media bytes streamed from the configured media store (in-memory storage only).
+          headers:
+            Content-Length:
+              description: Original media size in bytes.
+              schema:
+                type: integer
+                format: int64
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+            video/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Share token, album, or media item is unknown, or the item is not yet uploaded or failed processing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '410':
+          description: Share link has expired.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  parameters:
+    AlbumId:
+      name: albumId
+      in: path
+      required: true
+      description: Album UUID.
+      schema:
+        type: string
+        format: uuid
+    PhotoId:
+      name: photoId
+      in: path
+      required: true
+      description: Media item UUID (the route retains the photoId name for compatibility).
+      schema:
+        type: string
+        format: uuid
+    MediaSize:
+      name: size
+      in: query
+      required: false
+      description: Rendition to return. Defaults to original.
+      schema:
+        type: string
+        enum: [thumbnail, display, original]
+        default: original
+    Download:
+      name: download
+      in: query
+      required: false
+      description: When true, returns the original as an attachment named after the photo's filename (size is ignored).
+      schema:
+        type: boolean
+        default: false
+    CacheBuster:
+      name: v
+      in: query
+      required: false
+      description: Ignored by the server; changes whenever the served object changes so browsers can cache safely.
+      schema:
+        type: string
+    ShareToken:
+      name: token
+      in: path
+      required: true
+      description: Random URL-safe share token.
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 50
+  schemas:
+    CreateAlbumRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Album name. Whitespace-only values are rejected.
+        description:
+          type: [string, 'null']
+    UpdateAlbumRequest:
+      type: object
+      properties:
+        name:
+          type: [string, 'null']
+          minLength: 1
+          description: New album name. Whitespace-only values are rejected.
+        description:
+          type: [string, 'null']
+    Album:
+      type: object
+      required: [id, name, description, createdAt, photos]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        photos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Media'
+    Media:
+      type: object
+      description: A photo or video. Storage keys are never returned.
+      required: [id, filename, contentType, size, uploadedAt, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        contentType:
+          type: string
+          description: MIME type beginning with image/ or video/.
+          examples: [image/jpeg, video/mp4]
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Original media size in bytes.
+        uploadedAt:
+          type: string
+          format: date-time
+        editedAt:
+          type: [string, 'null']
+          format: date-time
+          description: When the photo content was last replaced by an edit; null if never edited.
+        status:
+          $ref: '#/components/schemas/PhotoStatus'
+        width:
+          type: [integer, 'null']
+          description: Pixel width, once processed.
+        height:
+          type: [integer, 'null']
+          description: Pixel height, once processed.
+        takenAt:
+          type: [string, 'null']
+          format: date-time
+          description: Capture time from the file's metadata, once processed.
+        urls:
+          oneOf:
+            - $ref: '#/components/schemas/MediaUrls'
+            - type: 'null'
+          description: Where to load the media; null while UPLOADING.
+    PhotoStatus:
+      type: string
+      enum: [UPLOADING, PROCESSING, READY, FAILED]
+      description: >-
+        UPLOADING: upload intent created, file not confirmed yet. PROCESSING: file stored, metadata and
+        derivatives being generated. READY: done. FAILED: rejected (for example the content is not a
+        supported image or video).
+    MediaUrls:
+      type: object
+      required: [thumbnail, display, original, download]
+      description: >-
+        thumbnail (about 400 px, for grids), display (about 2048 px, for the viewer) and the full
+        original. Until derivatives exist, thumbnail and display point at the next larger rendition, so
+        thumbnail may be a video or a full-size original; check contentType. Depending on deployment
+        these are relative API URLs (/api/...?size=...&v=...), S3 presigned URLs, or CloudFront signed
+        URLs; treat them as opaque, use them as-is, and fetch the album again for fresh ones when they
+        expire (hours, or the share link's expiry if sooner).
+      properties:
+        thumbnail:
+          type: string
+          format: uri-reference
+        display:
+          type: string
+          format: uri-reference
+        original:
+          type: string
+          format: uri-reference
+        download:
+          type: string
+          format: uri-reference
+          description: >-
+            The original as an attachment named after filename (Content-Disposition
+            attachment; filename*=UTF-8''...). With CloudFront it equals original, because a CloudFront
+            signed URL cannot override response headers; use the download attribute or save it client-side.
+    CreateUploadRequest:
+      type: object
+      required: [contentType, size]
+      properties:
+        filename:
+          type: [string, 'null']
+          description: Original file name; only the last path segment is kept. Its extension names the stored object.
+        contentType:
+          type: string
+          description: image/* or video/* (not image/svg+xml). Parameters are dropped.
+          examples: [image/jpeg]
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 104857600
+    UploadIntent:
+      type: object
+      required: [photoId, uploadUrl, method, headers, expiresAt]
+      properties:
+        photoId:
+          type: string
+          format: uuid
+        uploadUrl:
+          type: string
+          format: uri-reference
+          description: Absolute S3 URL on AWS, a relative API URL locally. Use as-is.
+        method:
+          type: string
+          enum: [PUT]
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Send exactly these headers with the PUT. The browser sets Content-Length itself.
+          example:
+            Content-Type: image/jpeg
+        expiresAt:
+          type: string
+          format: date-time
+          description: The upload URL stops working at this time.
+    CreateShareRequest:
+      type: object
+      required: [amount, unit]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          maximum: 365
+        unit:
+          type: string
+          enum: [HOURS, DAYS, WEEKS, MONTHS, YEARS]
+    ShareResponse:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          description: URL-safe token used with /api/shared/{token}.
+        expiresAt:
+          type: string
+          format: date-time
+    Problem:
+      type: object
+      description: Spring Problem Detail response.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+      additionalProperties: true
+  responses:
+    MediaRedirect:
+      description: S3 storage only. Redirect to a signed S3 or CloudFront URL for the requested rendition.
+      headers:
+        Location:
+          schema:
+            type: string
+            format: uri
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+    NotFound:
+      description: Album or media item was not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServerError:
+      description: Unexpected server or storage error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

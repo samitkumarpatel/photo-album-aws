@@ -1,0 +1,9 @@
+# Only what the Maven build in the Dockerfile needs.
+*
+!mvnw
+!pom.xml
+!.mvn
+!src/main
+!src/assembly
+# CloudFront serves the SPA, and the Lambda layout leaves it out anyway.
+src/main/resources/static

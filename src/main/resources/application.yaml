@@ -1,0 +1,42 @@
+spring:
+  application:
+    name: photo-album-aws
+    # Application settings. Environment variable names stay stable for deployments (Lambda, Terraform).
+    data:
+      # memory (default, no AWS needed) or dynamodb
+      mode: ${PHOTO_ALBUM_DATA_MODE:memory}
+      dynamodb:
+        table: ${PHOTO_ALBUM_TABLE:photo-album}
+    storage:
+      # memory (default, no AWS needed) or s3
+      mode: ${PHOTO_ALBUM_STORAGE_MODE:memory}
+      s3:
+        bucket: ${PHOTO_ALBUM_S3_BUCKET:}
+        prefix: ${PHOTO_ALBUM_S3_PREFIX:photo-album}
+    media:
+      # Lifetime of download URLs (S3 presigned or CloudFront signed). Shared albums cap it at the link's expiry.
+      url-ttl: ${PHOTO_ALBUM_MEDIA_URL_TTL:6h}
+      # Lifetime of presigned upload (PUT) URLs.
+      upload-url-ttl: ${PHOTO_ALBUM_UPLOAD_URL_TTL:15m}
+      # With S3 storage and a domain set, media URLs are CloudFront signed URLs: https://{domain}/{path-prefix}/{objectKey}.
+      # Without a domain they are S3 presigned URLs; with memory storage they point at the API itself.
+      cloudfront:
+        domain: ${PHOTO_ALBUM_CDN_DOMAIN:}
+        key-pair-id: ${PHOTO_ALBUM_CDN_KEY_PAIR_ID:}
+        # RSA private key matching the key group's public key: PEM text or a path to a PEM file.
+        private-key: ${PHOTO_ALBUM_CDN_PRIVATE_KEY:}
+        path-prefix: ${PHOTO_ALBUM_CDN_PATH_PREFIX:media}
+    processing:
+      # in-process (default): the API makes thumbnails itself on a background thread.
+      # events (AWS): S3 notifications feed the worker Lambda through SQS, so the API does nothing.
+      mode: ${PHOTO_ALBUM_PROCESSING_MODE:in-process}
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+  cloud:
+    aws:
+      # Spring Cloud AWS builds its AWS clients at startup, so a region must always resolve.
+      # Credentials use the SDK default provider chain (IAM role in AWS, a named profile locally).
+      region:
+        static: ${AWS_REGION:eu-north-1}

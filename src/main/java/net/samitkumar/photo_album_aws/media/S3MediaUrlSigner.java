@@ -1,14 +1,14 @@
 package net.samitkumar.photo_album_aws.media;
 
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Presigned S3 GET URLs, for S3 storage without a CloudFront distribution. A URL signed with temporary credentials
- * (a Lambda or ECS role) stops working when those credentials expire, even if its own expiry is later.
+ * Presigned S3 GET URLs. A URL signed with temporary credentials (a Lambda or ECS role) stops working when those
+ * credentials expire, even if its own expiry is later.
  */
 public class S3MediaUrlSigner implements MediaUrlSigner {
     private static final Duration MIN = Duration.ofSeconds(1);

@@ -1,10 +1,10 @@
 package net.samitkumar.photo_album_aws.processing;
 
-import net.samitkumar.photo_album_aws.AlbumController;
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumRepository;
+import net.samitkumar.photo_album_aws.controller.AlbumController;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import net.samitkumar.photo_album_aws.MediaStorage;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ConfigurableApplicationContext;

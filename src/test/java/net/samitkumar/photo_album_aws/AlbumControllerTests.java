@@ -1,13 +1,16 @@
 package net.samitkumar.photo_album_aws;
+import net.samitkumar.photo_album_aws.controller.AlbumController;
+import net.samitkumar.photo_album_aws.repository.InMemoryAlbumRepository;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 
-import net.samitkumar.photo_album_aws.AlbumController.CreateUpload;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.controller.AlbumController.CreateUpload;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
 import net.samitkumar.photo_album_aws.media.ApiMediaUrlSigner;
 import net.samitkumar.photo_album_aws.media.MediaProperties;
 import net.samitkumar.photo_album_aws.media.MediaSize;
 import net.samitkumar.photo_album_aws.media.MediaUrlSigner;
-import net.samitkumar.photo_album_aws.upload.LocalUploadController;
+import net.samitkumar.photo_album_aws.controller.LocalUploadController;
 import net.samitkumar.photo_album_aws.upload.LocalUploadUrlSigner;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -34,7 +37,7 @@ class AlbumControllerTests {
     private final InMemoryMediaStorage storage = new InMemoryMediaStorage();
     private final InMemoryAlbumRepository repository = new InMemoryAlbumRepository();
     private final List<UUID> processed = new ArrayList<>();
-    private final MediaProperties media = new MediaProperties(Duration.ofHours(6), Duration.ofMinutes(15), new MediaProperties.CloudFront(null, null, null, "media"));
+    private final MediaProperties media = new MediaProperties(Duration.ofHours(6), Duration.ofMinutes(15));
     private final LocalUploadUrlSigner uploadSigner = new LocalUploadUrlSigner(media);
     private final AlbumController controller = controller(new ApiMediaUrlSigner());
     private final LocalUploadController uploads = new LocalUploadController(repository, storage, uploadSigner);
@@ -317,6 +320,27 @@ class AlbumControllerTests {
         assertStatus(HttpStatus.NOT_FOUND, () -> controller.getSharedPhoto(share.token(), pending.photoId(), null, false));
         assertStatus(HttpStatus.NOT_FOUND, () -> controller.getSharedPhoto(share.token(), failed.id(), null, false));
         assertArrayEquals(new byte[]{1}, body(controller.getSharedPhoto(share.token(), ready.id(), null, false)));
+    }
+
+    @Test
+    void listSharesReturnsActiveLinksAndRevokeStopsThemWorking() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var other = controller.createAlbum(new AlbumController.CreateAlbum("Other", null));
+        var dayShare = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS));
+        var weekShare = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.WEEKS));
+        controller.createShare(other.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS));
+
+        // Soonest-expiring first, and only this album's links.
+        assertEquals(List.of(dayShare.token(), weekShare.token()),
+                controller.listShares(album.id()).stream().map(AlbumController.ShareResponse::token).toList());
+
+        controller.revokeShare(album.id(), dayShare.token());
+
+        assertEquals(List.of(weekShare.token()), controller.listShares(album.id()).stream().map(AlbumController.ShareResponse::token).toList());
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.sharedAlbum(dayShare.token()));
+        // A token cannot be revoked through another album's path.
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.revokeShare(other.id(), weekShare.token()));
+        assertEquals(List.of(weekShare.token()), controller.listShares(album.id()).stream().map(AlbumController.ShareResponse::token).toList());
     }
 
     @Test

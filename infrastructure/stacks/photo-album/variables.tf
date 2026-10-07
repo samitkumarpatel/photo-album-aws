@@ -30,12 +30,6 @@ variable "api_image_tag" {
   }
 }
 
-variable "api_image_command" {
-  description = "Optional override of the image CMD (the Lambda handler). Null uses the image's own CMD."
-  type        = list(string)
-  default     = null
-}
-
 variable "api_image_immutable_tags" {
   description = "Make ECR tags immutable so a tag always means the same image."
   type        = bool
@@ -128,18 +122,6 @@ variable "force_destroy_buckets" {
   description = "Let terraform destroy delete the media bucket and the ECR repository with their contents. Only for throw-away environments."
   type        = bool
   default     = false
-}
-
-variable "enable_media_route" {
-  description = "Serve the media bucket at /media/* through CloudFront, accepting only URLs signed with a generated key pair. The API signs URLs for this route once media_cdn_domain (or a custom domain) is known."
-  type        = bool
-  default     = false
-}
-
-variable "media_cdn_domain" {
-  description = "Public domain in signed media URLs. Null uses the first custom domain; without one, set it to the cloudfront_domain_name output after the first apply."
-  type        = string
-  default     = null
 }
 
 # ---- Delivery ----

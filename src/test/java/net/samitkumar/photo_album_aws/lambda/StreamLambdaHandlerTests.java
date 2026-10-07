@@ -41,7 +41,7 @@ class StreamLambdaHandlerTests {
 
     @Test
     void doesNotServeTheSpa() throws IOException {
-        // The lambda profile switches SpaController and static resources off; CloudFront serves the SPA.
+        // Test configuration disables the SPA fallback for this API handler test.
         assertEquals(404, invoke("GET", "/albums", null).get("statusCode").asInt());
     }
 

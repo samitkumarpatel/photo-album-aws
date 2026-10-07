@@ -28,10 +28,9 @@
 	</scm>
 	<properties>
 		<java.version>25</java.version>
-		<!-- Spring Cloud AWS 4.x is built against Spring Boot 4.0; it also runs on Boot 4.1 (verified by this
-		     project's LocalStack integration tests). Its BOM manages the AWS SDK v2 version as well. -->
 		<spring-cloud-aws.version>4.1.1</spring-cloud-aws.version>
 	</properties>
+
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
@@ -43,11 +42,22 @@
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
+
 	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-restclient</artifactId>
 		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-tomcat</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
@@ -56,32 +66,25 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-validation</artifactId>
 		</dependency>
-		<!-- Album, photo and share data: auto-configured DynamoDbClient and DynamoDbEnhancedClient -->
 		<dependency>
 			<groupId>io.awspring.cloud</groupId>
 			<artifactId>spring-cloud-aws-starter-dynamodb</artifactId>
 		</dependency>
-		<!-- S3 media storage: auto-configured S3Client, S3Template and S3Presigner -->
 		<dependency>
 			<groupId>io.awspring.cloud</groupId>
 			<artifactId>spring-cloud-aws-starter-s3</artifactId>
 		</dependency>
-		<!-- Lambda adapter for the REST API (phase 2) -->
 		<dependency>
 			<groupId>com.amazonaws.serverless</groupId>
 			<artifactId>aws-serverless-java-container-springboot4</artifactId>
 			<version>3.0.1</version>
+			<scope>compile</scope>
 		</dependency>
 		<!-- SQS events for the processing worker Lambda (phase 3) -->
 		<dependency>
 			<groupId>com.amazonaws</groupId>
 			<artifactId>aws-lambda-java-events</artifactId>
 			<version>3.16.1</version>
-		</dependency>
-		<!-- CloudFront signed URLs for media; version from the Spring Cloud AWS BOM -->
-		<dependency>
-			<groupId>software.amazon.awssdk</groupId>
-			<artifactId>cloudfront</artifactId>
 		</dependency>
 		<!-- EXIF and dimensions for uploaded media -->
 		<dependency>
@@ -100,6 +103,12 @@
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
 			<optional>true</optional>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator-test</artifactId>
+			<scope>test</scope>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -146,29 +155,6 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
-			<!-- Lambda layout (classes at the root, dependencies in lib/) in target/lambda/, next to the Boot fat jar.
-			     Built from target/classes, so the repackaged jar is untouched; the Dockerfile copies it into the image. -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-assembly-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>lambda-layout</id>
-						<phase>package</phase>
-						<goals>
-							<goal>single</goal>
-						</goals>
-						<configuration>
-							<descriptors>
-								<descriptor>src/assembly/lambda.xml</descriptor>
-							</descriptors>
-							<finalName>lambda</finalName>
-							<appendAssemblyId>false</appendAssemblyId>
-							<attach>false</attach>
-						</configuration>
-					</execution>
-				</executions>
-			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
@@ -207,5 +193,4 @@
 			</plugin>
 		</plugins>
 	</build>
-
 </project>

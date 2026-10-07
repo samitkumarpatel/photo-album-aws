@@ -17,14 +17,12 @@ import java.io.OutputStream;
  * Handler string: {@code net.samitkumar.photo_album_aws.lambda.StreamLambdaHandler::handleRequest}.
  */
 public class StreamLambdaHandler implements RequestStreamHandler {
-    // Started in the static initialiser, i.e. during the Lambda init phase, so SnapStart snapshots a fully
-    // initialised Spring context. The default (synchronous) InitializationWrapper is the right one for
-    // SnapStart; the async wrapper would hand the context to the first request instead.
+    // Retained for the legacy Java handler; the native container uses Lambda Web Adapter.
     private static final SpringBootLambdaContainerHandler<HttpApiV2ProxyRequest, AwsProxyResponse> handler;
 
     static {
         try {
-            handler = SpringBootLambdaContainerHandler.getHttpApiV2ProxyHandler(PhotoAlbumAwsApplication.class, "lambda");
+            handler = SpringBootLambdaContainerHandler.getHttpApiV2ProxyHandler(PhotoAlbumAwsApplication.class);
         } catch (ContainerInitializationException e) {
             throw new IllegalStateException("Could not initialise the Spring Boot application", e);
         }

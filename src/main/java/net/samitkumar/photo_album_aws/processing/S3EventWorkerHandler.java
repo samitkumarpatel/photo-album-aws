@@ -54,7 +54,7 @@ public class S3EventWorkerHandler implements RequestHandler<SQSEvent, SQSBatchRe
         return new SQSBatchResponse(failures);
     }
 
-    private void process(String objectKey) throws Exception {
+    void process(String objectKey) throws Exception {
         Optional<OriginalKey> original = OriginalKey.parse(objectKey);
         if (original.isEmpty()) {
             log.debug("Ignoring {}: not an original", objectKey);

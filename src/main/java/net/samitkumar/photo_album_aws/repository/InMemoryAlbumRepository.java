@@ -1,9 +1,10 @@
-package net.samitkumar.photo_album_aws;
+package net.samitkumar.photo_album_aws.repository;
 
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.ShareSummary;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -105,6 +106,14 @@ public class InMemoryAlbumRepository implements AlbumRepository {
 
     @Override
     public void deleteShare(String token) { shares.remove(token); }
+
+    @Override
+    public List<ShareSummary> listShares(UUID albumId) {
+        return shares.entrySet().stream()
+                .filter(e -> e.getValue().albumId().equals(albumId))
+                .map(e -> new ShareSummary(e.getKey(), e.getValue().albumId(), e.getValue().expiresAt()))
+                .toList();
+    }
 
     private static Album withPhotos(Album a, List<Photo> photos) {
         var sorted = photos.stream().sorted(Comparator.comparing(Photo::uploadedAt).thenComparing(p -> p.id().toString())).toList();

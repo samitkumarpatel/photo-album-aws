@@ -14,22 +14,17 @@ spring:
         bucket: ${PHOTO_ALBUM_S3_BUCKET:}
         prefix: ${PHOTO_ALBUM_S3_PREFIX:photo-album}
     media:
-      # Lifetime of download URLs (S3 presigned or CloudFront signed). Shared albums cap it at the link's expiry.
+      # Lifetime of download URLs (S3 presigned GET). Shared albums cap it at the link's expiry.
       url-ttl: ${PHOTO_ALBUM_MEDIA_URL_TTL:6h}
       # Lifetime of presigned upload (PUT) URLs.
       upload-url-ttl: ${PHOTO_ALBUM_UPLOAD_URL_TTL:15m}
-      # With S3 storage and a domain set, media URLs are CloudFront signed URLs: https://{domain}/{path-prefix}/{objectKey}.
-      # Without a domain they are S3 presigned URLs; with memory storage they point at the API itself.
-      cloudfront:
-        domain: ${PHOTO_ALBUM_CDN_DOMAIN:}
-        key-pair-id: ${PHOTO_ALBUM_CDN_KEY_PAIR_ID:}
-        # RSA private key matching the key group's public key: PEM text or a path to a PEM file.
-        private-key: ${PHOTO_ALBUM_CDN_PRIVATE_KEY:}
-        path-prefix: ${PHOTO_ALBUM_CDN_PATH_PREFIX:media}
     processing:
       # in-process (default): the API makes thumbnails itself on a background thread.
       # events (AWS): S3 notifications feed the worker Lambda through SQS, so the API does nothing.
       mode: ${PHOTO_ALBUM_PROCESSING_MODE:in-process}
+    lambda:
+      # The native Lambda image serves HTTP for the API and SQS event payloads for the worker.
+      role: ${PHOTO_ALBUM_LAMBDA_ROLE:api}
   servlet:
     multipart:
       max-file-size: 100MB

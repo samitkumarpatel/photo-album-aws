@@ -14,9 +14,7 @@ module "photo_album" {
 
   # API container image. Push it to the stack's ECR repository before applying (see
   # infrastructure/README.md). Bump the tag for every release; Lambda redeploys when it changes.
-  # The command matches the image's CMD; the worker function overrides it with its own handler.
   api_image_tag            = "0.0.1"
-  api_image_command        = ["net.samitkumar.photo_album_aws.lambda.StreamLambdaHandler::handleRequest"]
   api_image_immutable_tags = true
   api_image_keep_count     = 10
 
@@ -34,14 +32,10 @@ module "photo_album" {
   table_point_in_time_recovery = false
   table_deletion_protection    = false
 
-  # Media
+  # Media: no CloudFront route; the API hands out S3 presigned URLs.
   media_prefix          = "photo-album"
   media_versioning      = false
   force_destroy_buckets = true
-  # Two steps without a custom domain: apply with the route on, then set media_cdn_domain to the
-  # cloudfront_domain_name output and apply again. Until then the API hands out S3 presigned URLs.
-  enable_media_route = true
-  media_cdn_domain   = null
 
   # Delivery: no custom domain in dev; the site is served on the CloudFront domain.
   domain_aliases      = []

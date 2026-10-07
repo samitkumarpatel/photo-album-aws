@@ -1,6 +1,6 @@
 package net.samitkumar.photo_album_aws.processing;
 
-import net.samitkumar.photo_album_aws.AlbumRepository;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import net.samitkumar.photo_album_aws.MediaStorage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;

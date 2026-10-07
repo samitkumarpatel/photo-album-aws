@@ -1,6 +1,6 @@
 package net.samitkumar.photo_album_aws.media;
 
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
 
 import java.time.Instant;
 

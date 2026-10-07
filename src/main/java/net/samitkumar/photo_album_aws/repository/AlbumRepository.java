@@ -1,9 +1,10 @@
-package net.samitkumar.photo_album_aws;
+package net.samitkumar.photo_album_aws.repository;
 
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.ShareSummary;
 
 import java.util.List;
 import java.util.Optional;
@@ -59,4 +60,7 @@ public interface AlbumRepository {
     Optional<Share> findShare(String token);
 
     void deleteShare(String token);
+
+    /** Every share link created for this album, expired or not; the caller filters by {@code expiresAt}. */
+    List<ShareSummary> listShares(UUID albumId);
 }

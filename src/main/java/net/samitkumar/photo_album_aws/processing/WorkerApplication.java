@@ -52,7 +52,7 @@ public class WorkerApplication {
         @Override
         public String[] selectImports(AnnotationMetadata metadata) {
             return new String[]{
-                    "net.samitkumar.photo_album_aws.InMemoryAlbumRepository",
+                    "net.samitkumar.photo_album_aws.repository.InMemoryAlbumRepository",
                     "net.samitkumar.photo_album_aws.dynamodb.DynamoDbDataConfiguration",
                     "net.samitkumar.photo_album_aws.InMemoryMediaStorage",
                     "net.samitkumar.photo_album_aws.S3MediaStorage",

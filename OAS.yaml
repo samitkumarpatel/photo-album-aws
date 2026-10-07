@@ -353,7 +353,7 @@ paths:
       summary: Load an image or video from an album
       description: >-
         Prefer the URLs in the photo's urls field. With S3 storage this route answers 302 to a signed
-        S3 or CloudFront URL; with in-memory storage it streams the bytes. A missing derivative falls
+        S3 URL; with in-memory storage it streams the bytes. A missing derivative falls
         back to the display image, then the original.
       parameters:
         - $ref: '#/components/parameters/MediaSize'
@@ -452,6 +452,30 @@ paths:
   /api/albums/{albumId}/shares:
     parameters:
       - $ref: '#/components/parameters/AlbumId'
+    get:
+      tags: [Sharing]
+      operationId: listAlbumShares
+      summary: List this album's active share links
+      description: >-
+        Active (not yet expired) share links for the album, soonest-expiring first. A share link has no recipient
+        identity attached, so this lists the links themselves, not who has used them.
+      responses:
+        '200':
+          description: Active share links.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ShareResponse'
+        '404':
+          description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
     post:
       tags: [Sharing]
       operationId: createAlbumShare
@@ -490,6 +514,27 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '404':
           description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/albums/{albumId}/shares/{token}:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+      - $ref: '#/components/parameters/ShareToken'
+    delete:
+      tags: [Sharing]
+      operationId: revokeAlbumShare
+      summary: Revoke a share link
+      description: Stops the link working immediately, without waiting for it to expire.
+      responses:
+        '204':
+          description: Share link revoked. No response body.
+        '404':
+          description: Album not found, or the token is unknown or does not belong to this album.
           content:
             application/problem+json:
               schema:
@@ -723,9 +768,9 @@ components:
         thumbnail (about 400 px, for grids), display (about 2048 px, for the viewer) and the full
         original. Until derivatives exist, thumbnail and display point at the next larger rendition, so
         thumbnail may be a video or a full-size original; check contentType. Depending on deployment
-        these are relative API URLs (/api/...?size=...&v=...), S3 presigned URLs, or CloudFront signed
-        URLs; treat them as opaque, use them as-is, and fetch the album again for fresh ones when they
-        expire (hours, or the share link's expiry if sooner).
+        these are relative API URLs (/api/...?size=...&v=...) or S3 presigned URLs; treat them as opaque,
+        use them as-is, and fetch the album again for fresh ones when they expire (hours, or the share
+        link's expiry if sooner).
       properties:
         thumbnail:
           type: string
@@ -741,8 +786,7 @@ components:
           format: uri-reference
           description: >-
             The original as an attachment named after filename (Content-Disposition
-            attachment; filename*=UTF-8''...). With CloudFront it equals original, because a CloudFront
-            signed URL cannot override response headers; use the download attribute or save it client-side.
+            attachment; filename*=UTF-8''...).
     CreateUploadRequest:
       type: object
       required: [contentType, size]
@@ -824,7 +868,7 @@ components:
       additionalProperties: true
   responses:
     MediaRedirect:
-      description: S3 storage only. Redirect to a signed S3 or CloudFront URL for the requested rendition.
+      description: S3 storage only. Redirect to a signed S3 URL for the requested rendition.
       headers:
         Location:
           schema:

@@ -991,13 +991,26 @@ function ShareDialog({ album, close, notify }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [links, setLinks] = useState(null)
+  const [revoking, setRevoking] = useState(null)
   const linkInput = useRef(null)
   const link = share ? location.origin + '/share/' + share.token : ''
+  const loadLinks = useCallback(async () => {
+    try { setLinks(await api('/api/albums/' + album.id + '/shares')) }
+    catch { setLinks([]) }
+  }, [album.id])
+  useEffect(() => { loadLinks() }, [loadLinks])
   async function create(e) {
     e.preventDefault(); setBusy(true); setError('')
-    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })) }
+    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })); loadLinks() }
     catch (e) { setError(e.message) }
     finally { setBusy(false) }
+  }
+  async function revoke(token) {
+    setRevoking(token); setError('')
+    try { await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' }); setLinks(ls => ls.filter(l => l.token !== token)); notify('Link revoked') }
+    catch (e) { setError(e.message) }
+    finally { setRevoking(null) }
   }
   async function copy() {
     try { await navigator.clipboard.writeText(link); setCopied(true); notify('Link copied') }
@@ -1008,6 +1021,17 @@ function ShareDialog({ album, close, notify }) {
     catch (e) { if (e.name !== 'AbortError') setError('Could not open sharing. Copy the link instead.') }
   }
   return <Dialog title={'Share “' + album.name + '”'} description="Anyone with the link can view this album. Only you can add or delete." close={close} busy={busy}>
+    {!!links?.length && <div className="share-links">
+      <p className="field-label">Active links</p>
+      <ul>
+        {links.map(l => <li key={l.token} className="share-link-row">
+          <span><Clock3 size={14} />Expires {new Date(l.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+          <button type="button" className="icon-button" aria-label="Revoke this link" disabled={revoking === l.token} onClick={() => revoke(l.token)}>
+            {revoking === l.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}
+          </button>
+        </li>)}
+      </ul>
+    </div>}
     {!share ? <form onSubmit={create}>
       <p className="field-label" id="expiry-label">Link expires after</p>
       <div className="chip-row" role="group" aria-labelledby="expiry-label">

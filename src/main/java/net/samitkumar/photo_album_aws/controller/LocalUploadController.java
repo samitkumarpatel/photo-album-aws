@@ -1,8 +1,12 @@
-package net.samitkumar.photo_album_aws.upload;
+package net.samitkumar.photo_album_aws.controller;
+
+import net.samitkumar.photo_album_aws.*;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.upload.LocalUploadUrlSigner;
 
 import jakarta.servlet.http.HttpServletRequest;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumRepository;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import net.samitkumar.photo_album_aws.MediaStorage;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;

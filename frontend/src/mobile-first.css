@@ -375,6 +375,9 @@ main:focus { outline: none; }
 .link-box input:focus { outline: none; }
 .link-box .button { min-height: 42px; }
 .expiry-summary { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 12px; color: var(--muted); font-size: 13px; }
+.share-links ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.share-link-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); }
+.share-link-row span { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 
 /* upload */
 .drop-zone {

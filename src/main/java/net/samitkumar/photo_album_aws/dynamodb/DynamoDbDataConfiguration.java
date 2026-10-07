@@ -1,6 +1,6 @@
 package net.samitkumar.photo_album_aws.dynamodb;
 
-import net.samitkumar.photo_album_aws.AlbumRepository;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;

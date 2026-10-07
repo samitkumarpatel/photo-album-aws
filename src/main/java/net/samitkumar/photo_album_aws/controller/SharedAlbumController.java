@@ -1,4 +1,6 @@
-package net.samitkumar.photo_album_aws;
+package net.samitkumar.photo_album_aws.controller;
+
+import net.samitkumar.photo_album_aws.*;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;

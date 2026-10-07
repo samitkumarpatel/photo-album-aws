@@ -1,10 +1,11 @@
 package net.samitkumar.photo_album_aws.dynamodb;
 
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumController.Share;
-import net.samitkumar.photo_album_aws.AlbumRepository;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.ShareSummary;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbTable;
 import software.amazon.awssdk.enhanced.dynamodb.Expression;
@@ -39,7 +40,7 @@ import java.util.*;
  * Item    pk                sk               gsi1pk           gsi1sk
  * Album   ALBUM#{albumId}   META             OWNER#{owner}    ALBUM#{albumId}
  * Photo   ALBUM#{albumId}   PHOTO#{photoId}                                    (ttl while UPLOADING)
- * Share   SHARE#{token}     META
+ * Share   SHARE#{token}     META             ALBUM#{albumId}  SHARE#{token}    (ttl at expiresAt; gsi1pk lists an album's shares)
  * </pre>
  *
  * <p>Until sign-in exists every album belongs to one owner, {@value #OWNER}. With Cognito the owner becomes the
@@ -50,6 +51,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
     static final String OWNER = "default";
     private static final String META = "META";
     private static final String PHOTO_PREFIX = "PHOTO#";
+    private static final String SHARE_PREFIX = "SHARE#";
     private static final Expression EXISTS = Expression.builder().expression("attribute_exists(pk)").build();
     private static final Expression NOT_EXISTS = Expression.builder().expression("attribute_not_exists(pk)").build();
     private static final int BATCH_SIZE = 25;
@@ -207,6 +209,8 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
         item.setAlbumId(share.albumId().toString());
         item.setExpiresAt(share.expiresAt());
         item.setTtl(share.expiresAt().getEpochSecond());
+        item.setGsi1pk(albumPk(share.albumId()));
+        item.setGsi1sk(sharePk(token));
         shares.putItem(item);
     }
 
@@ -220,6 +224,17 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
     @Override
     public void deleteShare(String token) {
         shares.deleteItem(Key.builder().partitionValue(sharePk(token)).sortValue(META).build());
+    }
+
+    @Override
+    public List<ShareSummary> listShares(UUID albumId) {
+        var query = QueryEnhancedRequest.builder()
+                .queryConditional(QueryConditional.keyEqualTo(k -> k.partitionValue(albumPk(albumId))))
+                .build();
+        return shares.index(OWNER_INDEX).query(query).stream()
+                .flatMap(page -> page.items().stream())
+                .map(i -> new ShareSummary(i.getPk().substring(SHARE_PREFIX.length()), UUID.fromString(i.getAlbumId()), i.getExpiresAt()))
+                .toList();
     }
 
     /* ---------- helpers ---------- */
@@ -301,5 +316,5 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
 
     private static String albumPk(UUID albumId) { return "ALBUM#" + albumId; }
 
-    private static String sharePk(String token) { return "SHARE#" + token; }
+    private static String sharePk(String token) { return SHARE_PREFIX + token; }
 }

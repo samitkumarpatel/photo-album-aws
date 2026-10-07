@@ -1,6 +1,5 @@
-# The REST API as a container-image Lambda function with SnapStart, published behind an alias and
-# exposed through a function URL that only CloudFront (origin access control) may invoke.
-# The image should build on public.ecr.aws/lambda/java:25, which supports SnapStart out of the box.
+# The REST API as a GraalVM native container-image Lambda function, published behind an alias.
+# Lambda Web Adapter maps Function URL invocations to the Spring HTTP server in the image.
 data "aws_partition" "current" {}
 
 locals {
@@ -42,6 +41,7 @@ data "aws_iam_policy_document" "permissions" {
       "dynamodb:Query",
       "dynamodb:BatchWriteItem",
       "dynamodb:ConditionCheckItem",
+      "dynamodb:TransactWriteItems",
     ]
     resources = concat([var.dynamodb_table_arn], local.table_index_arns)
   }
@@ -88,20 +88,8 @@ resource "aws_lambda_function" "this" {
   memory_size   = var.memory_mb
   timeout       = var.timeout_seconds
 
-  # Overrides the image's CMD (the handler) only when set.
-  dynamic "image_config" {
-    for_each = var.image_command == null ? [] : [var.image_command]
-    content {
-      command = image_config.value
-    }
-  }
-
-  # A new image URI publishes a new version; SnapStart snapshots its initialised Spring context.
+  # A new image URI publishes a new version of the native executable.
   publish = true
-
-  snap_start {
-    apply_on = "PublishedVersions"
-  }
 
   environment {
     variables = var.environment

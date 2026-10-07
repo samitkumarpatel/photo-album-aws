@@ -19,11 +19,6 @@ variable "image_uri" {
   }
 }
 
-variable "image_command" {
-  description = "Handler that overrides the image CMD, for example [\"com.example.WorkerHandler::handleRequest\"]."
-  type        = list(string)
-}
-
 variable "architecture" {
   description = "Instruction set; must match the image platform."
   type        = string

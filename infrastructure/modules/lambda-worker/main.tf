@@ -1,5 +1,5 @@
-# A queue-driven worker as a container-image Lambda function with SnapStart. SQS delivers batches
-# to the published alias, and the function reports failed messages individually.
+# A queue-driven GraalVM native container-image Lambda function. The Lambda Web Adapter forwards
+# SQS events to the app's /events route, which reports failed messages individually.
 locals {
   table_index_arns = [for name in var.dynamodb_index_names : "${var.dynamodb_table_arn}/index/${name}"]
 }
@@ -80,19 +80,11 @@ resource "aws_lambda_function" "this" {
   memory_size   = var.memory_mb
   timeout       = var.timeout_seconds
 
-  image_config {
-    command = var.image_command
-  }
-
   ephemeral_storage {
     size = var.ephemeral_storage_mb
   }
 
   publish = true
-
-  snap_start {
-    apply_on = "PublishedVersions"
-  }
 
   environment {
     variables = var.environment
@@ -112,7 +104,7 @@ resource "aws_lambda_alias" "live" {
   function_version = aws_lambda_function.this.version
 }
 
-# Targets the alias, so messages run on the SnapStart-enabled published version.
+# Targets the alias so event source mapping updates follow each published image version.
 resource "aws_lambda_event_source_mapping" "queue" {
   event_source_arn                   = var.queue_arn
   function_name                      = aws_lambda_alias.live.arn

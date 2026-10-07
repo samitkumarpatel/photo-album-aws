@@ -1,6 +1,7 @@
 package net.samitkumar.photo_album_aws.upload;
 
 import net.samitkumar.photo_album_aws.media.MediaProperties;
+import net.samitkumar.photo_album_aws.controller.LocalUploadController;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 

@@ -2,10 +2,10 @@ package net.samitkumar.photo_album_aws.processing;
 
 import com.amazonaws.services.lambda.runtime.events.SQSBatchResponse;
 import com.amazonaws.services.lambda.runtime.events.SQSEvent;
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.InMemoryAlbumRepository;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.repository.InMemoryAlbumRepository;
 import net.samitkumar.photo_album_aws.InMemoryMediaStorage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

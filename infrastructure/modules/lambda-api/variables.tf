@@ -19,14 +19,8 @@ variable "image_uri" {
   }
 }
 
-variable "image_command" {
-  description = "Override for the image CMD, for example [\"com.example.StreamLambdaHandler::handleRequest\"]. Null uses the CMD baked into the image."
-  type        = list(string)
-  default     = null
-}
-
 variable "architecture" {
-  description = "Instruction set; must match the image platform. arm64 (Graviton) is cheaper per GB-second and supports SnapStart."
+  description = "Instruction set; must match the GraalVM native image platform."
   type        = string
   default     = "arm64"
 

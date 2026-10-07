@@ -8,9 +8,7 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   # The app stores media under this prefix today (spring.application.storage.s3.prefix).
   media_object_prefix = var.media_prefix == "" ? "" : "${trimsuffix(var.media_prefix, "/")}/"
-  # Signed media URLs need the public domain, which CloudFront only knows after the first apply.
-  media_cdn_domain = var.enable_media_route ? try(coalesce(var.media_cdn_domain, try(var.domain_aliases[0], null)), "") : ""
-  site_origins     = distinct(concat([module.site.url], [for alias in var.domain_aliases : "https://${alias}"]))
+  site_origins        = distinct(concat([module.site.url], [for alias in var.domain_aliases : "https://${alias}"]))
 }
 
 module "data_table" {
@@ -67,7 +65,6 @@ module "api" {
 
   name               = "${local.prefix}-api"
   image_uri          = "${module.api_repository.url}:${var.api_image_tag}"
-  image_command      = var.api_image_command
   architecture       = var.lambda_architecture
   memory_mb          = var.lambda_memory_mb
   timeout_seconds    = var.lambda_timeout_seconds
@@ -86,22 +83,12 @@ module "api" {
     PHOTO_ALBUM_S3_PREFIX    = trimsuffix(var.media_prefix, "/")
     # S3 events drive the worker, so the API does not process uploads itself.
     PHOTO_ALBUM_PROCESSING_MODE = "events"
-    }, local.media_cdn_domain == "" ? {} : {
-    # Without these the API hands out S3 presigned URLs instead of CloudFront ones.
-    PHOTO_ALBUM_CDN_DOMAIN      = local.media_cdn_domain
-    PHOTO_ALBUM_CDN_KEY_PAIR_ID = module.media_signing_key[0].key_pair_id
-    PHOTO_ALBUM_CDN_PRIVATE_KEY = module.media_signing_key[0].private_key_pem
+    PHOTO_ALBUM_LAMBDA_ROLE     = "api"
+    # No CloudFront media route: the API hands out S3 presigned URLs.
   })
 }
 
-module "media_signing_key" {
-  source = "../../modules/cloudfront-signing-key"
-  count  = var.enable_media_route ? 1 : 0
-
-  name = "${local.prefix}-media"
-}
-
-# Upload processing: S3 ObjectCreated under originals/ -> SQS -> worker Lambda (same image, own handler).
+# Upload processing: S3 ObjectCreated under originals/ -> SQS -> worker Lambda (same native image, worker role).
 resource "aws_sns_topic" "alerts" {
   name = "${local.prefix}-alerts"
 }
@@ -142,7 +129,6 @@ module "worker" {
   name                 = "${local.prefix}-worker"
   description          = "Photo album upload processing"
   image_uri            = "${module.api_repository.url}:${var.api_image_tag}"
-  image_command        = ["net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"]
   architecture         = var.lambda_architecture
   memory_mb            = var.worker_memory_mb
   timeout_seconds      = var.worker_timeout_seconds
@@ -161,22 +147,22 @@ module "worker" {
     PHOTO_ALBUM_S3_BUCKET       = module.media_bucket.id
     PHOTO_ALBUM_S3_PREFIX       = trimsuffix(var.media_prefix, "/")
     PHOTO_ALBUM_PROCESSING_MODE = "events"
-    # libwebp is loaded through native access; this silences the JDK 25 warning.
-    JAVA_TOOL_OPTIONS = "--enable-native-access=ALL-UNNAMED"
+    PHOTO_ALBUM_LAMBDA_ROLE     = "worker"
+    AWS_LWA_PASS_THROUGH_PATH   = "/events"
   }
 }
 
 module "site" {
   source = "../../modules/cloudfront-site"
 
-  name                              = local.prefix
-  spa_bucket_regional_domain_name   = module.spa_bucket.regional_domain_name
-  api_function_url                  = module.api.function_url
-  media_bucket_regional_domain_name = var.enable_media_route ? module.media_bucket.regional_domain_name : null
-  media_trusted_key_group_ids       = module.media_signing_key[*].key_group_id
-  aliases                           = var.domain_aliases
-  acm_certificate_arn               = var.acm_certificate_arn
-  price_class                       = var.price_class
+  # No media route: the media bucket is never an origin, so it gets no CloudFront read access either;
+  # the API serves media with its own S3 presigned URLs instead.
+  name                            = local.prefix
+  spa_bucket_regional_domain_name = module.spa_bucket.regional_domain_name
+  api_function_url                = module.api.function_url
+  aliases                         = var.domain_aliases
+  acm_certificate_arn             = var.acm_certificate_arn
+  price_class                     = var.price_class
 }
 
 module "spa_read_policy" {
@@ -185,16 +171,6 @@ module "spa_read_policy" {
   bucket_id        = module.spa_bucket.id
   bucket_arn       = module.spa_bucket.arn
   distribution_arn = module.site.distribution_arn
-}
-
-module "media_read_policy" {
-  source = "../../modules/s3-cloudfront-read-policy"
-
-  bucket_id        = module.media_bucket.id
-  bucket_arn       = module.media_bucket.arn
-  distribution_arn = module.site.distribution_arn
-  # Without the media route CloudFront gets no read access at all.
-  object_prefix = var.enable_media_route ? "" : "no-cloudfront-access/"
 }
 
 module "api_access" {

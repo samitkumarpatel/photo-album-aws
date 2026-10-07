@@ -1,12 +1,15 @@
-package net.samitkumar.photo_album_aws;
+package net.samitkumar.photo_album_aws.controller;
 
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
+import net.samitkumar.photo_album_aws.*;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 import net.samitkumar.photo_album_aws.media.MediaSize;
 import net.samitkumar.photo_album_aws.media.MediaUrlSigner;
 import net.samitkumar.photo_album_aws.media.MediaUrls;
 import net.samitkumar.photo_album_aws.processing.ProcessingTrigger;
 import net.samitkumar.photo_album_aws.upload.UploadUrlSigner;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.InvalidMediaTypeException;
@@ -225,6 +228,27 @@ public class AlbumController {
         return new ShareResponse(token, expiresAt);
     }
 
+    /** Active share links for this album, soonest-expiring first. There is no recipient to name: a share is a bearer
+     *  link, not tied to any viewer identity, so this lists the links themselves, not who has used them. */
+    @GetMapping("/{albumId}/shares")
+    public List<ShareResponse> listShares(@PathVariable UUID albumId) {
+        requireAlbum(albumId);
+        Instant now = Instant.now();
+        return repository.listShares(albumId).stream()
+                .filter(s -> s.expiresAt().isAfter(now))
+                .sorted(Comparator.comparing(ShareSummary::expiresAt))
+                .map(s -> new ShareResponse(s.token(), s.expiresAt()))
+                .toList();
+    }
+
+    @DeleteMapping("/{albumId}/shares/{token}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void revokeShare(@PathVariable UUID albumId, @PathVariable String token) {
+        requireAlbum(albumId);
+        repository.findShare(token).filter(s -> s.albumId().equals(albumId)).orElseThrow(AlbumController::shareNotFound);
+        repository.deleteShare(token);
+    }
+
     /** A shared album shows only photos that finished uploading and passed processing; URLs expire with the link. */
     public AlbumResponse sharedAlbum(String token) {
         var shared = requireSharedAlbum(token);
@@ -341,7 +365,7 @@ public class AlbumController {
         return name.length() > 255 ? name.substring(0, 255) : name;
     }
 
-    static String extension(String filename, String contentType) {
+    public static String extension(String filename, String contentType) {
         int dot = filename.lastIndexOf('.');
         if (dot >= 0) {
             String ext = filename.substring(dot + 1).toLowerCase(Locale.ROOT);
@@ -365,7 +389,7 @@ public class AlbumController {
     }
 
     /** The version after the given original; keys from before versioning count as version 1. */
-    static int nextVersion(String objectKey) {
+    public static int nextVersion(String objectKey) {
         var matcher = VERSIONED_ORIGINAL.matcher(objectKey);
         return matcher.find() ? Integer.parseInt(matcher.group(1)) + 1 : 2;
     }
@@ -437,12 +461,18 @@ public class AlbumController {
         return new ResponseStatusException(HttpStatus.NOT_FOUND, "Photo not found");
     }
 
+    private static ResponseStatusException shareNotFound() {
+        return new ResponseStatusException(HttpStatus.NOT_FOUND, "Share link not found");
+    }
+
     public record CreateAlbum(@NotBlank String name, String description) {}
     public record UpdateAlbum(String name, String description) {}
     public enum DurationUnit { HOURS, DAYS, WEEKS, MONTHS, YEARS }
     public record CreateShare(@jakarta.validation.constraints.Min(1) int amount, @jakarta.validation.constraints.NotNull DurationUnit unit) {}
     public record Share(UUID albumId, Instant expiresAt) {}
     public record ShareResponse(String token, Instant expiresAt) {}
+    /** A share link as the repository lists it; unlike {@link Share} it carries its own token. */
+    public record ShareSummary(String token, UUID albumId, Instant expiresAt) {}
     public record CreateUpload(String filename, String contentType, Long size) {}
     /** Where and how to PUT the file: send {@code headers} exactly; the URL stops working at {@code expiresAt}. */
     public record UploadIntent(UUID photoId, String uploadUrl, String method, Map<String, String> headers, Instant expiresAt) {}

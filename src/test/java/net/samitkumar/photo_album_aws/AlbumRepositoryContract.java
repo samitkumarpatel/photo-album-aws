@@ -1,9 +1,12 @@
 package net.samitkumar.photo_album_aws;
+import net.samitkumar.photo_album_aws.controller.AlbumController;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 
-import net.samitkumar.photo_album_aws.AlbumController.Album;
-import net.samitkumar.photo_album_aws.AlbumController.Photo;
-import net.samitkumar.photo_album_aws.AlbumController.PhotoStatus;
-import net.samitkumar.photo_album_aws.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Album;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Photo;
+import net.samitkumar.photo_album_aws.controller.AlbumController.PhotoStatus;
+import net.samitkumar.photo_album_aws.controller.AlbumController.Share;
+import net.samitkumar.photo_album_aws.controller.AlbumController.ShareSummary;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -181,6 +184,28 @@ abstract class AlbumRepositoryContract {
         assertEquals(share, repository().findShare(token).orElseThrow());
         repository().deleteShare(token);
         assertTrue(repository().findShare(token).isEmpty());
+    }
+
+    @Test
+    void listSharesReturnsOnlyThatAlbumsLinks() {
+        UUID albumId = UUID.randomUUID();
+        UUID otherAlbumId = UUID.randomUUID();
+        String tokenA = "token-a-" + UUID.randomUUID();
+        String tokenB = "token-b-" + UUID.randomUUID();
+        String otherToken = "token-other-" + UUID.randomUUID();
+        repository().saveShare(tokenA, new Share(albumId, NOW.plus(1, ChronoUnit.DAYS)));
+        repository().saveShare(tokenB, new Share(albumId, NOW.plus(2, ChronoUnit.DAYS)));
+        repository().saveShare(otherToken, new Share(otherAlbumId, NOW.plus(1, ChronoUnit.DAYS)));
+
+        List<ShareSummary> shares = repository().listShares(albumId);
+
+        assertEquals(2, shares.size());
+        assertTrue(shares.stream().allMatch(s -> s.albumId().equals(albumId)));
+        assertTrue(shares.stream().map(ShareSummary::token).toList().containsAll(List.of(tokenA, tokenB)));
+
+        repository().deleteShare(tokenA);
+        repository().deleteShare(tokenB);
+        repository().deleteShare(otherToken);
     }
 
     protected static Album album(String name, Instant createdAt) {

@@ -1,4 +1,6 @@
 package net.samitkumar.photo_album_aws;
+import net.samitkumar.photo_album_aws.controller.AlbumController;
+import net.samitkumar.photo_album_aws.repository.AlbumRepository;
 
 import net.samitkumar.photo_album_aws.dynamodb.DynamoDbAlbumRepository;
 import org.junit.jupiter.api.Test;

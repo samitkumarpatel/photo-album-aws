@@ -90,22 +90,21 @@ terraform apply -target=module.photo_album.module.api_repository
 
 ### 3. Build and push the API image
 
-The repository-root `Dockerfile` builds on the AWS Java 25 base image (`public.ecr.aws/lambda/java:25`), which supports SnapStart without extra hooks. A Spring Boot executable jar does not run as-is on that image, because its classes sit under `BOOT-INF/`, so the image holds the layout the Java runtime expects instead: classes in `${LAMBDA_TASK_ROOT}` and dependency jars in `${LAMBDA_TASK_ROOT}/lib/`. `./mvnw package` writes that layout to `target/lambda/`; the Dockerfile runs that build itself in a first stage, so no local build is needed. The SPA is not part of the image; CloudFront serves it from S3 (step 5).
+The repository-root `Dockerfile` compiles the Spring Boot application with GraalVM Native Image and packages the executable on AWS's Amazon Linux 2023 provided runtime image. Lambda Web Adapter starts the HTTP application and bridges Lambda invocations to it. The API and SQS worker use the same image; `PHOTO_ALBUM_LAMBDA_ROLE` selects the API or worker role, and the worker receives SQS records at `/events`. The image build does not run the Maven test suite.
 
-The image's CMD is the API handler, `net.samitkumar.photo_album_aws.lambda.StreamLambdaHandler::handleRequest`. The worker function uses the same image with its CMD overridden to `net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest`.
+GitHub Actions builds this image on an ARM64 runner and publishes it to `ghcr.io/<owner>/<repository>` on pushes to `main` and version tags (`v*.*.*`). Pull requests build the image without publishing it. This GHCR image is a CI artifact; Lambda deploys container images from Amazon ECR, so the Terraform deployment below still requires publishing the same image to its ECR repository.
 
 ```sh
 cd ../../..                                    # repository root
-./mvnw verify                                  # optional: tests (LocalStack needs Docker); the image build skips them
-
 REPO=$(terraform -chdir=infrastructure/environments/dev output -raw api_repository_url)
 TAG=0.0.1                                      # must equal api_image_tag in environments/dev/main.tf
 aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin "${REPO%%/*}"
-docker buildx build --platform linux/arm64 --provenance=false -t "$REPO:$TAG" --push .
+docker buildx build --platform linux/arm64 --build-arg BUILDARCH=arm64 --provenance=false -t "$REPO:$TAG" --push .
 ```
 
-- `--platform linux/arm64` must match `lambda_architecture`. The Maven stage runs on the build machine's own platform and the final stage only copies files, so building for either architecture needs no emulation.
+- `--platform linux/arm64` must match `lambda_architecture`. Native Image does not cross-compile: build on a Linux ARM64 builder for arm64 Lambda, or use a native x86_64 builder for x86_64 Lambda.
 - `--provenance=false` produces a single-image manifest. Lambda rejects the multi-entry manifest that Buildx attestations create.
+- The native compiler can use substantial RAM. The build limits Native Image parallelism to two; if the container is still OOM-killed, give the builder more memory and retry.
 - Tags are immutable, and Terraform only updates the function when the image URI changes. Use a new tag for every release, such as the git commit hash, and update `api_image_tag` to match.
 
 ### 4. Apply everything
@@ -116,7 +115,7 @@ terraform plan
 terraform apply
 ```
 
-Each new image tag publishes a new function version, SnapStart takes its snapshot, and the `live` alias moves to it.
+Each new image tag publishes a new function version and moves the `live` alias to it. Native images do not use SnapStart.
 
 ### 5. Deploy the SPA
 

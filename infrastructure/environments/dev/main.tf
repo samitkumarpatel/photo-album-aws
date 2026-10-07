@@ -1,49 +1,70 @@
 # Dev environment: every value is spelled out here, so there are no .tfvars files.
-# To add an environment, copy this folder and change the literals.
+# To add an environment, copy this folder and change the names.
+data "aws_caller_identity" "current" {}
+
 locals {
-  project     = "photo-album"
+  project     = "photo-album" # used for tags (providers.tf)
   environment = "dev"
   region      = "eu-north-1" # matches the application's default region
+
+  # Copied into each function's ECR repository when the function is first created.
+  # Afterwards the pipeline pushes new images and updates the functions.
+  bootstrap_image = "ghcr.io/samitkumarpatel/photo-album-aws:latest"
+
+  table  = "photo-album-dev"
+  bucket = "photo-album-dev-media-${data.aws_caller_identity.current.account_id}" # bucket names are global
+  queue  = "photo-album-dev-processing"
+
+  # What the application reads; see src/main/resources/application.yaml.
+  app_environment = {
+    PHOTO_ALBUM_DATA_MODE       = "dynamodb"
+    PHOTO_ALBUM_TABLE           = local.table
+    PHOTO_ALBUM_STORAGE_MODE    = "s3"
+    PHOTO_ALBUM_S3_BUCKET       = local.bucket
+    PHOTO_ALBUM_S3_PREFIX       = "photo-album"
+    PHOTO_ALBUM_PROCESSING_MODE = "events" # uploads are processed by the worker, not the API
+  }
 }
 
 module "photo_album" {
   source = "../../stacks/photo-album"
 
-  project     = local.project
-  environment = local.environment
+  name = "photo-album-dev"
 
-  # API container image. Push it to the stack's ECR repository before applying (see
-  # infrastructure/README.md). Bump the tag for every release; Lambda redeploys when it changes.
-  api_image_tag            = "0.0.1"
-  api_image_immutable_tags = true
-  api_image_keep_count     = 10
+  functions = {
+    "photo-album-dev-api" = {
+      image       = local.bootstrap_image # its CMD already runs StreamLambdaHandler
+      memory      = 2048
+      timeout     = 30
+      public_url  = true
+      environment = local.app_environment
+    }
 
-  lambda_architecture    = "arm64"
-  lambda_memory_mb       = 2048
-  lambda_timeout_seconds = 30
-  log_retention_days     = 14
+    "photo-album-dev-worker" = {
+      image       = local.bootstrap_image
+      handler     = "net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"
+      memory      = 2048
+      timeout     = 120
+      sqs_trigger = local.queue
+      environment = merge(local.app_environment, {
+        JAVA_TOOL_OPTIONS = "--enable-native-access=ALL-UNNAMED" # native WebP encoder
+      })
+    }
+  }
 
-  # Upload processing worker (same image, its own handler).
-  worker_memory_mb           = 2048
-  worker_timeout_seconds     = 120
-  worker_maximum_concurrency = 2
+  s3_buckets = [local.bucket]
 
-  # Data: cheap to recreate in dev.
-  table_point_in_time_recovery = false
-  table_deletion_protection    = false
+  dynamodb = {
+    (local.table) = {
+      hash_key      = "pk"
+      range_key     = "sk"
+      indexes       = { gsi1 = { hash_key = "gsi1pk", range_key = "gsi1sk" } }
+      ttl_attribute = "ttl" # share links expire on their own
+    }
+  }
 
-  # Media: no CloudFront route; the API hands out S3 presigned URLs.
-  media_prefix          = "photo-album"
-  media_versioning      = false
-  force_destroy_buckets = true
-
-  # Delivery: no custom domain in dev; the site is served on the CloudFront domain.
-  domain_aliases      = []
-  acm_certificate_arn = null
-  price_class         = "PriceClass_100"
-
-  # Cost and dead-letter alerts. Replace with a real address before applying;
-  # each address must confirm its SNS subscription by email.
-  budget_monthly_limit_usd = 10
-  budget_alert_emails      = ["alerts@example.com"]
+  sqs = [
+    # New originals are queued for the worker.
+    { name = local.queue, s3_bucket = local.bucket, s3_prefix = "photo-album/originals/" },
+  ]
 }

@@ -5,5 +5,8 @@
 !.mvn
 !src/main
 !src/assembly
+!target/
+target/*
+!target/photo-album-aws-0.0.1-SNAPSHOT.jar
 # CloudFront serves the SPA, and the Lambda layout leaves it out anyway.
 src/main/resources/static

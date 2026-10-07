@@ -1,170 +1,92 @@
-# Stillroom infrastructure (Terraform)
+# Photo album infrastructure (Terraform)
 
-Terraform for the AWS deployment described in [docs/aws-architecture-plan.md](../docs/aws-architecture-plan.md): DynamoDB for album data, S3 for media and the SPA, the REST API as a container-image Lambda function with SnapStart, one CloudFront distribution in front of everything, and a cost budget.
+Lambda (container images in ECR), S3, DynamoDB and SQS.
 
 ## Layout
 
 ```
 infrastructure/
-  modules/                      small, reusable building blocks; no provider blocks, no environment values
-    budget/                     monthly AWS Budgets alert by email
-    cloudfront-signing-key/     generated key pair, CloudFront public key and key group for signed media URLs
-    cloudfront-site/            distribution, origin access controls, SPA route and media prefix functions
-    dynamodb-table/             single table: pk/sk, gsi1 (gsi1pk/gsi1sk), on-demand, TTL on "ttl"
-    ecr-repository/             private image registry for the API, lifecycle and Lambda pull policy
-    lambda-api/                 container-image function, SnapStart, alias, IAM function URL, role, logs
-    job-queue/                  SQS queue, dead-letter queue, alarm, optional S3 send policy
-    lambda-cloudfront-access/   lets one distribution invoke the function URL
-    lambda-worker/              container-image function, SnapStart, alias, SQS event source with batch item failures
-    s3-bucket/                  private, encrypted bucket with optional lifecycle and CORS rules
-    s3-cloudfront-read-policy/  bucket policy: read only through one distribution, HTTPS only
-  stacks/
-    photo-album/                the whole application, composed from the modules; inputs only
-  environments/
-    dev/                        root module: providers, backend, and one call to the stack with literal values
+  stacks/photo-album/      the reusable stack, one file per service
+    variables.tf           the four inputs: functions, s3_buckets, dynamodb, sqs
+    lambda.tf              ECR repository + bootstrap image per function, functions, shared role, triggers, URLs
+    s3.tf                  private buckets, CORS, S3 -> SQS notifications
+    dynamodb.tf            on-demand tables with indexes and TTL
+    sqs.tf                 queues, each with a dead-letter queue
+  environments/dev/        providers, backend, and one call to the stack
 ```
 
-How the layers fit together:
+## The stack's input
 
-- **Modules** each do one thing and know nothing about environments.
-- **The stack** wires modules into the application: names, permissions between resources, and the environment variables the API reads. It exposes inputs such as memory size or domain names, but holds no environment values.
-- **An environment** is the only place with concrete values. `environments/dev/main.tf` sets every stack input as a literal, so there are no `.tfvars` files to keep in sync.
+`environments/dev/main.tf` is the whole picture:
 
-"Stack" here means this composition layer. It is not HCP Terraform Stacks (`.tfstack.hcl` and `.tfdeploy.hcl` files); this setup runs with the plain Terraform CLI.
+```hcl
+module "photo_album" {
+  source = "../../stacks/photo-album"
+  name   = "photo-album-dev"
 
-## What gets created
+  functions = {
+    "photo-album-dev-api"    = { image = local.bootstrap_image, public_url = true, environment = {...} }
+    "photo-album-dev-worker" = { image = local.bootstrap_image, handler = "...S3EventWorkerHandler::handleRequest", sqs_trigger = local.queue }
+  }
 
-| Resource | Name in dev | Notes |
+  s3_buckets = [local.bucket]
+
+  dynamodb = {
+    (local.table) = { hash_key = "pk", range_key = "sk", indexes = { gsi1 = { hash_key = "gsi1pk", range_key = "gsi1sk" } }, ttl_attribute = "ttl" }
+  }
+
+  sqs = [
+    { name = local.queue, s3_bucket = local.bucket, s3_prefix = "photo-album/originals/" },
+  ]
+}
+```
+
+Names are literal: what you write is what AWS gets.
+
+| Function field | Default | Meaning |
 | --- | --- | --- |
-| DynamoDB table | `photo-album-dev-data` | Matches `src/test/resources/localstack/init-aws.sh`. Point-in-time recovery and deletion protection are inputs, off in dev. Encrypted at rest with the AWS owned key unless a KMS key is passed. |
-| Media bucket | `photo-album-dev-media-<account-id>` | Private, SSE-S3. Lifecycle: abort incomplete uploads after 1 day, expire `trash/` after 30 days, move `originals/` and the app's current `photo-album/` prefix to Intelligent-Tiering after 90 days. CORS allows `PUT` and `GET` from the site for presigned uploads. |
-| SPA bucket | `photo-album-dev-site-<account-id>` | Private; CloudFront reads it through origin access control. |
-| ECR repository | `photo-album-dev-api` | Scan on push, immutable tags, keeps the newest 10 images, removes untagged images after a day. Its policy lets Lambda pull images. |
-| Lambda function | `photo-album-dev-api` | Container image, arm64, 2048 MB, SnapStart on published versions, alias `live`. The function URL uses `AWS_IAM` auth, so only CloudFront can call it. The role can use only the table, its `gsi1` index, and objects under the media prefix. |
-| CloudFront | one distribution | Default route serves the SPA, `/api/*` goes to the function URL without caching, and `/media/*` serves the media bucket when enabled, accepting only signed URLs. |
-| Signing key | `photo-album-dev-media` | Generated RSA key pair; CloudFront trusts the public key through a key group, and the API gets the private key as `PHOTO_ALBUM_CDN_PRIVATE_KEY`. The private key is in Terraform state. |
-| Processing queue | `photo-album-dev-processing` | Receives S3 `ObjectCreated` events for `photo-album/originals/`. Visibility timeout is six times the worker timeout; after 3 failed attempts a message moves to `-dlq`, which raises an alarm. |
-| Worker function | `photo-album-dev-worker` | Same image as the API with the handler `processing.S3EventWorkerHandler`. Reads `originals/`, writes `derived/`, updates the table. 2048 MB, 120 s, 2 GB `/tmp`, at most 2 concurrent runs in dev. |
-| Alerts topic | `photo-album-dev-alerts` | SNS topic for the dead-letter alarm; the budget emails are subscribed and must confirm. |
-| Budget | `photo-album-dev-monthly` | Emails at 80% and 100% of actual spend and at 100% of forecast. |
+| `image` | required | Bootstrap image, copied into the function's ECR repository when the function is created |
+| `handler` | image's CMD | Overrides the image's CMD, for example to run another handler from the same image |
+| `architecture` | `arm64` | Must match the image |
+| `memory`, `timeout` | `1024`, `30` | MB, seconds |
+| `environment` | `{}` | Environment variables |
+| `public_url` | `false` | Public function URL, no auth |
+| `sqs_trigger` | none | A queue from `sqs` that invokes the function, with per-message failure reporting |
 
-The stack sets these environment variables on the function, matching `src/main/resources/application.yaml`:
+## How images flow
 
-| Variable | Value |
-| --- | --- |
-| `PHOTO_ALBUM_DATA_MODE` | `dynamodb` |
-| `PHOTO_ALBUM_TABLE` | the table name |
-| `PHOTO_ALBUM_STORAGE_MODE` | `s3` |
-| `PHOTO_ALBUM_S3_BUCKET` | the media bucket |
-| `PHOTO_ALBUM_S3_PREFIX` | `photo-album` |
-| `PHOTO_ALBUM_PROCESSING_MODE` | `events`, because S3 events drive the worker |
-| `PHOTO_ALBUM_CDN_DOMAIN`, `PHOTO_ALBUM_CDN_KEY_PAIR_ID`, `PHOTO_ALBUM_CDN_PRIVATE_KEY` | Set once the media route is on and its domain is known (see below). Without them the API hands out S3 presigned URLs. |
+1. **Terraform creates a function.** It creates an ECR repository with the function's name, then copies `image` (from GHCR) into it as `:bootstrap`. Lambda then starts from that image.
+2. **The pipeline deploys.** It pushes a new image to the repository and points the function at it:
+   ```sh
+   docker push <account>.dkr.ecr.<region>.amazonaws.com/photo-album-dev-api:<sha>
+   aws lambda update-function-code --function-name photo-album-dev-api \
+     --image-uri <account>.dkr.ecr.<region>.amazonaws.com/photo-album-dev-api:<sha>
+   ```
+   Repeat for `photo-album-dev-worker`. `terraform output ecr_repositories` lists the repositories.
+3. **Terraform leaves the image alone afterwards.** It ignores `image_uri` changes, so a later `terraform apply` never rolls back what the pipeline deployed.
 
-The worker gets the same data and storage variables, plus `JAVA_TOOL_OPTIONS=--enable-native-access=ALL-UNNAMED` for the native WebP encoder.
+The copy runs once per repository, on the machine running `terraform apply`. That machine needs `docker` and the AWS CLI. If the GHCR package is private, run `docker login ghcr.io` first.
 
-`AWS_REGION` is not set: Lambda provides it, and the app maps it to `spring.cloud.aws.region.static`.
-
-## Prerequisites
-
-- Terraform 1.10 or newer, the AWS CLI, and Docker with Buildx.
-- AWS credentials for the target account, for example `aws login` or a named profile.
-- Before applying, replace the placeholder budget email in `environments/dev/main.tf`.
-
-## Deploying
-
-All commands run from `infrastructure/environments/dev`.
-
-### 1. Initialise
-
-```sh
-terraform init
-```
-
-### 2. First time only: create the image repository
-
-Lambda needs the image to exist before the function can be created, so create the repository on its own first:
-
-```sh
-terraform apply -target=module.photo_album.module.api_repository
-```
-
-### 3. Build and push the API image
-
-The repository-root `Dockerfile` compiles the Spring Boot application with GraalVM Native Image and packages the executable on AWS's Amazon Linux 2023 provided runtime image. Lambda Web Adapter starts the HTTP application and bridges Lambda invocations to it. The API and SQS worker use the same image; `PHOTO_ALBUM_LAMBDA_ROLE` selects the API or worker role, and the worker receives SQS records at `/events`. The image build does not run the Maven test suite.
-
-GitHub Actions builds this image on an ARM64 runner and publishes it to `ghcr.io/<owner>/<repository>` on pushes to `main` and version tags (`v*.*.*`). Pull requests build the image without publishing it. This GHCR image is a CI artifact; Lambda deploys container images from Amazon ECR, so the Terraform deployment below still requires publishing the same image to its ECR repository.
-
-```sh
-cd ../../..                                    # repository root
-REPO=$(terraform -chdir=infrastructure/environments/dev output -raw api_repository_url)
-TAG=0.0.1                                      # must equal api_image_tag in environments/dev/main.tf
-aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin "${REPO%%/*}"
-docker buildx build --platform linux/arm64 --build-arg BUILDARCH=arm64 --provenance=false -t "$REPO:$TAG" --push .
-```
-
-- `--platform linux/arm64` must match `lambda_architecture`. Native Image does not cross-compile: build on a Linux ARM64 builder for arm64 Lambda, or use a native x86_64 builder for x86_64 Lambda.
-- `--provenance=false` produces a single-image manifest. Lambda rejects the multi-entry manifest that Buildx attestations create.
-- The native compiler can use substantial RAM. The build limits Native Image parallelism to two; if the container is still OOM-killed, give the builder more memory and retry.
-- Tags are immutable, and Terraform only updates the function when the image URI changes. Use a new tag for every release, such as the git commit hash, and update `api_image_tag` to match.
-
-### 4. Apply everything
+## Deploy the infrastructure
 
 ```sh
 cd infrastructure/environments/dev
-terraform plan
+terraform init
 terraform apply
+terraform output api_url
 ```
 
-Each new image tag publishes a new function version and moves the `live` alias to it. Native images do not use SnapStart.
+Things the stack works out on its own:
 
-### 5. Deploy the SPA
+- **Access:** one IAM role for all functions. It can use every table (including indexes), bucket and queue in the stack, and nothing else.
+- **ECR:** the newest 10 images are kept. Lambda in this account may pull from the repositories.
+- **Dead-letter queues:** each queue `x` gets `x-dlq`. A message moves there after 3 failed attempts.
+- **Visibility timeout:** six times the timeout of the slowest function the queue triggers.
+- **Notifications:** setting `s3_bucket` on a queue sends that bucket's `ObjectCreated` events under `s3_prefix` to the queue.
 
-The frontend build currently writes to `src/main/resources/static`.
+## Notes
 
-```sh
-(cd ../../../frontend && npm ci && npm run build)
-SPA_BUCKET=$(terraform output -raw spa_bucket)
-DISTRIBUTION=$(terraform output -raw cloudfront_distribution_id)
-aws s3 sync ../../../src/main/resources/static "s3://$SPA_BUCKET" --delete
-aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION" --paths "/*"
-```
-
-`terraform output site_url` prints the address.
-
-## Remote state
-
-`environments/dev` uses local state so `terraform init` works immediately. For shared or CI use:
-
-1. Create a private, versioned S3 bucket for state once, by hand or with a small separate configuration.
-2. Replace `backend "local" {}` in `environments/dev/versions.tf` with the commented `backend "s3"` block. `use_lockfile = true` uses S3-native locking, so no DynamoDB lock table is needed.
-3. Run `terraform init -migrate-state`.
-
-## Adding an environment
-
-1. Copy `environments/dev` to, for example, `environments/prod`.
-2. Change the literals in `main.tf`: `environment = "prod"`, deletion protection and point-in-time recovery on, `force_destroy_buckets = false`, a real budget, and a domain with its certificate if wanted.
-3. Give it its own state key or bucket.
-
-Custom domains need an ACM certificate in `us-east-1`, passed as `acm_certificate_arn` together with `domain_aliases`. DNS records pointing at `cloudfront_domain_name` are managed outside this configuration for now.
-
-## Things to know before the first deploy
-
-- **Request bodies through CloudFront need a hash header.** With origin access control in front of a Lambda function URL, AWS requires `PUT` and `POST` requests to include the SHA-256 of the body in an `x-amz-content-sha256` header, because Lambda does not accept unsigned payloads. This is stated in the CloudFront guide under "Restrict access to an AWS Lambda function URL origin". The frontend's JSON requests (create album, rename, share) must add this header. `PATCH` most likely needs it too. `GET` and `DELETE` without a body do not.
-- **Signed media URLs need a second apply without a custom domain.** The API must know the public domain to sign URLs, and CloudFront only assigns it on the first apply. Apply once, set `media_cdn_domain` in `environments/dev/main.tf` to the `cloudfront_domain_name` output, and apply again. With `domain_aliases` set, the first alias is used and one apply is enough. Until then the API hands out S3 presigned URLs, which work but stop when the Lambda role's temporary credentials expire.
-- **Confirm the alert subscriptions.** Each address in `budget_alert_emails` gets an SNS confirmation email for the dead-letter alarm.
-- **Edits still go through Lambda.** "Replace original" in the editor uploads through the API, so edited images over 6 MB fail until it moves to a presigned upload. New uploads already go straight to S3.
-- **SnapStart and uniqueness.** Anything created during start-up, such as random seeds or cached credentials, is shared by every environment restored from the snapshot. The AWS SDK and the Java base image handle their own state; review the app's own start-up code against the SnapStart uniqueness guidance.
-
-## Validation
-
-`terraform fmt -recursive -check` passes, and `terraform validate` passes for every module, the stack, and `environments/dev` with AWS provider 6.67.0 and TLS provider 4.x. Nothing has been planned or applied against an AWS account yet.
-
-## Next steps
-
-These later phases from the architecture plan are not in this configuration yet:
-
-- **Amazon Cognito** user pool and app client for sign-in.
-- **AI image service** as a container Lambda behind its own SQS queue.
-- **Video poster frames:** an ffmpeg Lambda layer for the worker.
-- **Private key in a secret store:** move the signing key to Secrets Manager once the app can read it from there.
-- **DNS** records for custom domains, and a state-bootstrap configuration.
+- **The API URL is public.** Nothing sits in front of it; the app has to handle its own authentication.
+- **Buckets can't be destroyed while they hold objects.** Empty them first. ECR repositories are deleted together with their images.
+- **Remote state:** `environments/dev/versions.tf` uses local state. To share it, switch to the commented `backend "s3"` block and run `terraform init -migrate-state`.
+- **Another environment:** copy `environments/dev` and change the names.

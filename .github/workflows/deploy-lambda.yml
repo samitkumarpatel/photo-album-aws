@@ -20,16 +20,16 @@ permissions:
   id-token: write
 
 jobs:
-  build-and-deploy:
+  build-and-publish:
+    name: Build and publish image
     runs-on: ubuntu-24.04
-    concurrency:
-      group: deploy-lambda-${{ github.ref }}-${{ inputs.target_environment || 'dev' }}
-      cancel-in-progress: false
     environment:
       name: ${{ inputs.target_environment || 'dev' }}
     env:
       AWS_REGION: eu-north-1
       DEPLOY_ENV: ${{ inputs.target_environment || 'dev' }}
+    outputs:
+      ecr_registry: ${{ steps.ecr.outputs.registry }}
 
     steps:
       - name: Check out source
@@ -115,10 +115,29 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  deploy-api:
+    name: Deploy API Lambda
+    needs: build-and-publish
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: deploy-api-${{ github.ref }}-${{ inputs.target_environment || 'dev' }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.target_environment || 'dev' }}
+    env:
+      AWS_REGION: eu-north-1
+      DEPLOY_ENV: ${{ inputs.target_environment || 'dev' }}
+    steps:
+      - name: Assume AWS deploy role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::257222191091:role/photo-album-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Deploy API Lambda
-        if: github.event_name != 'pull_request'
         run: |
-          IMAGE_URI="${{ steps.ecr.outputs.registry }}/photo-album-${DEPLOY_ENV}-api:sha-${GITHUB_SHA}"
+          IMAGE_URI="${{ needs.build-and-publish.outputs.ecr_registry }}/photo-album-${DEPLOY_ENV}-api:sha-${GITHUB_SHA}"
           aws lambda update-function-code \
             --function-name "photo-album-${DEPLOY_ENV}-api" \
             --image-uri "$IMAGE_URI" \
@@ -127,10 +146,29 @@ jobs:
             --function-name "photo-album-${DEPLOY_ENV}-api" \
             --region "$AWS_REGION"
 
+  deploy-worker:
+    name: Deploy worker Lambda
+    needs: build-and-publish
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: deploy-worker-${{ github.ref }}-${{ inputs.target_environment || 'dev' }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.target_environment || 'dev' }}
+    env:
+      AWS_REGION: eu-north-1
+      DEPLOY_ENV: ${{ inputs.target_environment || 'dev' }}
+    steps:
+      - name: Assume AWS deploy role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::257222191091:role/photo-album-github-actions-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
       - name: Deploy worker Lambda
-        if: github.event_name != 'pull_request'
         run: |
-          IMAGE_URI="${{ steps.ecr.outputs.registry }}/photo-album-${DEPLOY_ENV}-worker:sha-${GITHUB_SHA}"
+          IMAGE_URI="${{ needs.build-and-publish.outputs.ecr_registry }}/photo-album-${DEPLOY_ENV}-worker:sha-${GITHUB_SHA}"
           aws lambda update-function-code \
             --function-name "photo-album-${DEPLOY_ENV}-worker" \
             --image-uri "$IMAGE_URI" \

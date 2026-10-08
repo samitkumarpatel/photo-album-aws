@@ -3,8 +3,23 @@ variable "name" {
   type        = string
 }
 
-variable "repository" {
-  description = "GitHub repository allowed to deploy, in owner/repository format."
+variable "repository_owner" {
+  description = "GitHub account that owns the repository."
+  type        = string
+}
+
+variable "repository_owner_id" {
+  description = "Immutable numeric GitHub owner ID used in this repository's OIDC subject."
+  type        = string
+}
+
+variable "repository_name" {
+  description = "GitHub repository name without the owner or .git suffix."
+  type        = string
+}
+
+variable "repository_id" {
+  description = "Immutable numeric GitHub repository ID used in this repository's OIDC subject."
   type        = string
 }
 

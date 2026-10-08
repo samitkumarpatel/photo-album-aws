@@ -56,7 +56,7 @@ locals {
 }
 
 module "photo_album" {
-  source = "../../stacks/stack/1.0.0"
+  source = "../../stacks/backend/1.0.0"
 
   name     = "photo-album-dev"
   lambda   = local.lambda
@@ -69,4 +69,19 @@ module "photo_album" {
       s3_prefix = "photo-album/originals/"
     },
   ]
+}
+
+# The GitHub OIDC provider is account-wide. Keep its ownership in one state
+# only; this shared role trusts the dev and prod GitHub Environments.
+module "github_actions" {
+  source = "../../stacks/github-actions/1.0.0"
+
+  name                = "photo-album-github-actions-deploy"
+  repository_owner    = "samitkumarpatel"
+  repository_owner_id = "7632269"
+  repository_name     = "photo-album-aws"
+  repository_id       = "1407945617"
+  environment_names   = ["dev", "prod"]
+  account_id          = data.aws_caller_identity.current.account_id
+  region              = local.region
 }

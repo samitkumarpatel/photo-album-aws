@@ -58,7 +58,7 @@ locals {
 }
 
 module "photo_album" {
-  source = "../../stacks/stack/1.0.0"
+  source = "../../stacks/backend/1.0.0"
 
   name     = "photo-album-prod"
   lambda   = local.lambda

@@ -6,11 +6,10 @@ Terraform provisions the application as one reusable stack per environment. Each
 
 ```text
 infrastructure/
-  stacks/stack/1.0.0/       versioned, self-contained application stack
-  environments/dev/         dev inputs and state; pins stack version 1.0.0
+  stacks/backend/1.0.0/     versioned, self-contained application backend stack
+  environments/dev/         dev inputs/state; also owns the account-level GitHub OIDC stack
   environments/prod/        prod inputs and separate state; pins stack version 1.0.0
   stacks/github-actions/1.0.0/ reusable account-level GitHub OIDC deploy stack
-  environments/github-actions/ shared state for the account-level deploy identity
 ```
 
 The stack version is part of its source path. Environments stay pinned to a version until deliberately updated; add a new version directory for incompatible or reviewed stack changes, then change each environment's `source` independently. The stack contains its Terraform resources directly, with no separate `modules/` tree.
@@ -27,16 +26,16 @@ Terraform checks the repository when the bootstrap step runs and seeds it only w
 
 `.github/workflows/deploy-lambda.yml` builds an `amd64` image from the repository Dockerfile. Pull requests build without publishing. Pushes to `main` publish to GHCR and both dev ECR repositories, then show separate **Deploy API Lambda** and **Deploy worker Lambda** jobs in GitHub Actions; both wait for the shared image build and can deploy in parallel. `workflow_dispatch` can deploy either dev or prod. ECR release images use the commit SHA; the lifecycle rule keeps the newest ten `sha-` images and preserves the bootstrap `latest` image.
 
-The account-level GitHub OIDC provider and deploy role are managed by the reusable `stacks/github-actions/1.0.0` stack. They have one dedicated Terraform root at `environments/github-actions`; do not instantiate the provider separately from dev and prod, because AWS allows only one provider for this issuer in an account. The root's `terraform.tfvars` passes the repository and allowed GitHub Environment names. Keep those names aligned with the `dev` and `prod` environments used by the workflow.
+The account-level GitHub OIDC provider and deploy role are managed by the reusable `stacks/github-actions/1.0.0` module, called from `environments/dev/main.tf` alongside the dev application stack. Its repository and allowed GitHub Environment names are module inputs in that file. Keep the environment names aligned with the `dev` and `prod` environments used by the workflow. Only the dev Terraform root owns these account-wide IAM resources; do not add the module to prod, because AWS allows only one provider for this issuer in an account.
 
-Run the shared stack with AWS credentials allowed to manage IAM. It uses the same existing S3 Terraform state bucket as dev, with a separate state key:
+Run the dev root with AWS credentials allowed to manage IAM. It uses the existing dev S3 state:
 
 ```sh
-cd infrastructure/environments/github-actions
+cd infrastructure/environments/dev
 terraform init
 ```
 
-If the OIDC provider and role were created manually (as described in older versions of this README), import them into this root's state before planning. This prevents Terraform from trying to create resources that already exist:
+If the OIDC provider, role, and inline permissions policy are already in AWS but are not in the dev state, import them before planning. This prevents Terraform from trying to create resources that already exist:
 
 ```sh
 export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -52,15 +51,15 @@ terraform import \
   photo-album-github-actions-deploy:photo-album-lambda-deploy
 ```
 
-Skip an import only when that resource does not already exist in AWS. Review and apply the plan; Terraform will reconcile the trust policy and manage the role's inline ECR/Lambda deploy permissions:
+Skip an import only when the resource does not exist in AWS or is already managed by the dev state. Review and apply the dev plan; Terraform will reconcile the trust policy and manage the role's inline ECR/Lambda deploy permissions:
 
 ```sh
+cd ../dev
 terraform plan
 terraform apply
-terraform output deploy_role_arn
 ```
 
-The role trusts only `repo:<owner>/<repository>:environment:<name>` subjects listed in `github_environments`, with audience `sts.amazonaws.com`. The workflow currently assumes `arn:aws:iam::257222191091:role/photo-album-github-actions-deploy`; the Terraform output should match that ARN. An `AccessDenied` from `AssumeRoleWithWebIdentity` means the provider, audience, repository, or GitHub Environment subject still does not match. Configure required reviewers on GitHub's `prod` Environment if production deployments need approval.
+GitHub switched repositories created after July 15, 2026 to immutable OIDC subjects that include the owner and repository IDs. This repository's subjects are `repo:samitkumarpatel@7632269/photo-album-aws@1407945617:environment:dev` and the same value ending in `environment:prod`; the stack inputs in `environments/dev/main.tf` construct these values. See [GitHub's OIDC reference](https://docs.github.com/en/actions/reference/security/oidc). The workflow assumes `arn:aws:iam::257222191091:role/photo-album-github-actions-deploy`. An `AccessDenied` from `AssumeRoleWithWebIdentity` means the provider, audience, repository IDs, or environment subject do not match. Configure required reviewers on GitHub's `prod` Environment if production deployments need approval.
 
 ## Resources and permissions
 

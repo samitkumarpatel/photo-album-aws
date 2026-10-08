@@ -3,7 +3,7 @@ locals {
 
   # Lambda requires the visibility timeout to cover the consuming function's timeout; AWS recommends six times it.
   visibility_timeout = {
-    for name, q in local.queues : name => 6 * max(30, [for f in var.functions : f.timeout if f.sqs_trigger == name]...)
+    for name, q in local.queues : name => 6 * max(30, [for f in var.lambda : f.timeout if f.sqs_trigger == name]...)
   }
 }
 

@@ -1,10 +1,10 @@
 # ---- Images: one ECR repository per function ----
 resource "aws_ecr_repository" "this" {
-  for_each = var.functions
+  for_each = var.lambda
 
   name                 = each.key
   image_tag_mutability = "MUTABLE"
-  force_delete         = true # images are rebuilt by the pipeline
+  force_delete         = each.value.force_delete
 
   image_scanning_configuration {
     scan_on_push = true
@@ -18,8 +18,8 @@ resource "aws_ecr_lifecycle_policy" "this" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep the newest 10 images for rollbacks"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
+      description  = "Keep the newest 10 SHA-tagged release images"
+      selection    = { tagStatus = "tagged", tagPrefixList = ["sha-"], countType = "imageCountMoreThan", countNumber = 10 }
       action       = { type = "expire" }
     }]
   })
@@ -37,32 +37,46 @@ resource "aws_ecr_repository_policy" "this" {
       Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
       Action    = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
-      Condition = { StringLike = { "aws:sourceArn" = "arn:aws:lambda:${local.region}:${local.account_id}:function:*" } }
+      Condition = { StringEquals = { "aws:sourceArn" = "arn:aws:lambda:${local.region}:${local.account_id}:function:${each.key}" } }
     }]
   })
 }
 
-# Copies the bootstrap image into the new repository, once, so the function has something to run.
-# Runs on the machine applying Terraform: needs docker and the AWS CLI, and a docker login to the
-# source registry if the image is private.
+# Seeds an empty ECR repository with a bootstrap image so Lambda can be created on the first apply.
+# Runs on the Terraform host, which needs Docker, AWS CLI, and source-registry access.
 resource "terraform_data" "bootstrap_image" {
-  for_each = var.functions
+  for_each = var.lambda
 
-  triggers_replace = [aws_ecr_repository.this[each.key].repository_url]
+  triggers_replace = [aws_ecr_repository.this[each.key].repository_url, each.value.source_image, each.value.source_image_tag, each.value.architecture]
 
   provisioner "local-exec" {
     command = <<-EOT
       set -e
-      aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$${TARGET%%/*}"
-      docker pull --platform "linux/$ARCH" "$SOURCE"
-      docker tag "$SOURCE" "$TARGET"
-      docker push "$TARGET"
+      command -v aws >/dev/null || { echo "AWS CLI is required to bootstrap Lambda images" >&2; exit 1; }
+      command -v docker >/dev/null || { echo "Docker is required to bootstrap Lambda images" >&2; exit 1; }
+
+      IMAGE_COUNT=$(aws ecr describe-images \
+        --repository-name "$REPOSITORY" \
+        --region "$REGION" \
+        --query 'length(imageDetails)' \
+        --output text)
+
+      if [ "$IMAGE_COUNT" = "0" ]; then
+        aws ecr get-login-password --region "$REGION" \
+          | docker login --username AWS --password-stdin "$${TARGET%%/*}"
+        docker pull --platform "linux/$ARCH" "$SOURCE"
+        docker tag "$SOURCE" "$TARGET"
+        docker push "$TARGET"
+      else
+        echo "ECR repository already has $IMAGE_COUNT image(s); skipping bootstrap seed."
+      fi
     EOT
     environment = {
-      REGION = local.region
-      ARCH   = each.value.architecture == "x86_64" ? "amd64" : "arm64"
-      SOURCE = each.value.image
-      TARGET = "${aws_ecr_repository.this[each.key].repository_url}:bootstrap"
+      REGION     = local.region
+      REPOSITORY = aws_ecr_repository.this[each.key].name
+      ARCH       = each.value.architecture == "x86_64" ? "amd64" : "arm64"
+      SOURCE     = each.value.source_image
+      TARGET     = "${aws_ecr_repository.this[each.key].repository_url}:${each.value.source_image_tag}"
     }
   }
 }
@@ -139,19 +153,19 @@ resource "aws_iam_role_policy" "lambda" {
 
 # ---- Functions ----
 resource "aws_cloudwatch_log_group" "this" {
-  for_each = var.functions
+  for_each = var.lambda
 
   name              = "/aws/lambda/${each.key}"
   retention_in_days = 14
 }
 
 resource "aws_lambda_function" "this" {
-  for_each = var.functions
+  for_each = var.lambda
 
   function_name = each.key
   role          = aws_iam_role.lambda.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.this[each.key].repository_url}:bootstrap"
+  image_uri     = "${aws_ecr_repository.this[each.key].repository_url}:${each.value.source_image_tag}"
   architectures = [each.value.architecture]
   memory_size   = each.value.memory
   timeout       = each.value.timeout
@@ -182,7 +196,7 @@ resource "aws_lambda_function" "this" {
 
 # ---- Triggers ----
 resource "aws_lambda_event_source_mapping" "sqs" {
-  for_each = { for name, f in var.functions : name => f if f.sqs_trigger != null }
+  for_each = { for name, f in var.lambda : name => f if f.sqs_trigger != null }
 
   event_source_arn        = aws_sqs_queue.this[each.value.sqs_trigger].arn
   function_name           = aws_lambda_function.this[each.key].arn
@@ -192,7 +206,7 @@ resource "aws_lambda_event_source_mapping" "sqs" {
 
 # ---- Public URLs ----
 locals {
-  public_functions = { for name, f in var.functions : name => f if f.public_url }
+  public_functions = { for name, f in var.lambda : name => f if f.public_url }
 }
 
 resource "aws_lambda_function_url" "this" {

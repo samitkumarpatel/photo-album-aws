@@ -1,6 +1,6 @@
 output "api_url" {
   description = "Public URL of the API function."
-  value       = module.photo_album.function_urls["photo-album-dev-api"]
+  value       = module.photo_album.function_urls["photo-album-prod-api"]
 }
 
 output "media_bucket" {
@@ -9,11 +9,11 @@ output "media_bucket" {
 }
 
 output "sqs_dead_letter_urls" {
-  description = "Messages that failed processing 3 times."
+  description = "Messages that failed image processing three times."
   value       = module.photo_album.sqs_dead_letter_urls
 }
 
 output "ecr_repositories" {
-  description = "Where the pipeline pushes each function's image."
+  description = "Where the release pipeline pushes each function image."
   value       = module.photo_album.ecr_repositories
 }

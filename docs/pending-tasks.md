@@ -26,9 +26,9 @@ Status snapshot: 2026-10-07. 88 tests pass; `npm run build` passes; upload → W
 
 ## First deployment (phase 2)
 
-1. Replace the alert email. Create the ECR repository with a targeted apply.
-2. Build and push the image (`docker buildx build --platform linux/arm64 --provenance=false ...`).
-3. Apply everything; confirm the SNS subscription email.
+1. Configure GitHub's `prod` Environment reviewers if production deployments need approval; the AWS OIDC deploy role is configured and its ARN is hardcoded in the workflow.
+2. Apply the environment's Terraform stack so ECR, Lambda, data, and event resources exist.
+3. Push to `main` to build and deploy the amd64 Lambda image to dev; use the workflow's manual dispatch to deploy prod.
 4. Set `media_cdn_domain` to the `cloudfront_domain_name` output and apply again (not needed with a custom domain).
 5. Build the SPA and sync it to the site bucket; invalidate CloudFront.
 6. Smoke test: create album, upload, thumbnails appear, share link.

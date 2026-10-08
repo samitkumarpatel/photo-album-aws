@@ -7,4 +7,7 @@ terraform {
       version = "~> 6.0"
     }
   }
+
+  # Separate local state from dev. Configure an S3 backend before team or CI use.
+  backend "local" {}
 }

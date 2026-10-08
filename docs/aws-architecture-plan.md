@@ -149,7 +149,7 @@ Notes:
 | Upload processing | S3 event to SQS to Lambda | Thumbnails, metadata, video poster |
 | Scheduled jobs | EventBridge Scheduler | Only where TTL or lifecycle rules cannot help |
 | Users | Cognito user pool | JWT validated in the API |
-| Infrastructure as code | Terraform, in `infrastructure/` | Modules, one stack, one folder per environment |
+| Infrastructure as code | Terraform, in `infrastructure/` | Versioned, self-contained stack and one folder per environment |
 | Cost control | AWS Budgets | Alert from day one |
 
 ### S3 media bucket layout
@@ -261,7 +261,7 @@ No AWS resources required.
 
 ### Phase 2: infrastructure with Terraform
 
-The Terraform lives in [`infrastructure/`](../infrastructure/README.md): reusable modules, a `photo-album` stack that composes them, and `environments/dev`, which passes literal values to the stack.
+The Terraform lives in [`infrastructure/`](../infrastructure/README.md): a self-contained stack at `stacks/stack/1.0.0` and separate `environments/dev` and `environments/prod` configurations that pin that stack version.
 
 - ~~Buckets, DynamoDB table, ECR repository, Lambda API from a container image with SnapStart, function URL with origin access control.~~ **Written and validated**, not yet applied.
 - ~~CloudFront distribution with the API, SPA and media behaviors and the SPA rewrite function.~~ **Written and validated.**

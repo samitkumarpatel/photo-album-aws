@@ -1,10 +1,11 @@
 resource "aws_dynamodb_table" "this" {
   for_each = var.dynamodb
 
-  name         = each.key
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = each.value.hash_key
-  range_key    = each.value.range_key
+  name                        = each.key
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = each.value.deletion_protection
+  hash_key                    = each.value.hash_key
+  range_key                   = each.value.range_key
 
   # Every key attribute of the table and its indexes, declared once.
   dynamic "attribute" {

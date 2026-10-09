@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -59,6 +60,17 @@ class S3MediaStorage {
                             .build(),
                     RequestBody.fromInputStream(content, size));
             return key;
+        }
+
+        @Override
+        public String copyObject(String sourceObjectKey, String destinationRelativeKey, String contentType) {
+            String destinationKey = objectKey(destinationRelativeKey);
+            s3.copyObject(r -> r.copySource(properties.bucket() + "/" + sourceObjectKey)
+                    .destinationBucket(properties.bucket())
+                    .destinationKey(destinationKey)
+                    .metadataDirective(MetadataDirective.REPLACE)
+                    .contentType(contentType));
+            return destinationKey;
         }
 
         @Override

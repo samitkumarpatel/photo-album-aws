@@ -13,6 +13,29 @@ variable "api_url" {
   type        = string
 }
 
+variable "media_bucket_name" {
+  description = "Optional private S3 media bucket to serve through this distribution."
+  type        = string
+  default     = null
+}
+
+variable "media_path_prefix" {
+  description = "Object key prefix routed to the private media bucket."
+  type        = string
+  default     = "photo-album"
+}
+
+variable "media_key_group_id" {
+  description = "CloudFront key group required to access media objects when media_bucket_name is configured."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.media_bucket_name == null || var.media_key_group_id != null
+    error_message = "media_key_group_id is required when media_bucket_name is configured."
+  }
+}
+
 variable "domain_name" {
   description = "Optional custom domain for this CloudFront distribution."
   type        = string

@@ -6,9 +6,9 @@ import {
 } from 'lucide-react'
 import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy } from './imageOps.js'
 import CameraSpinner from '../CameraSpinner.jsx'
-import { apiFetch, errorMessage } from '../api.js'
+import { api, apiFetch, errorMessage } from '../api.js'
 import { isCrossOrigin } from '../media.js'
-import { uploadToAlbum } from '../upload/uploads.js'
+import { putFile, uploadToAlbum } from '../upload/uploads.js'
 import './editor.css'
 
 const ICONS = {
@@ -242,9 +242,20 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       const { type, name, copyName } = outputFormat(item.contentType, item.filename)
       const blob = await exportBlob(full.current, edit, params, type)
       const file = new File([blob], mode === 'copy' ? copyName : name, { type })
-      // A copy is a normal upload (presigned PUT when available). Replacing still goes through the API as multipart;
-      // apiFetch encodes it by hand so the CloudFront OAC body hash covers the exact bytes.
+      // A copy is a normal upload. In AWS, replacement images also use S3 presigned uploads because Lambda/API
+      // Gateway cannot reliably receive multipart bodies. Local development keeps the direct multipart endpoint.
       if (mode === 'copy') { onSaved(await uploadToAlbum(item.albumId, file), mode); return }
+      if (import.meta.env.VITE_API_BASE_URL) {
+        const path = '/api/albums/' + item.albumId + '/photos/' + item.id + '/replacement'
+        const request = { filename: file.name, contentType: file.type, size: file.size }
+        const intent = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) })
+        await putFile(intent, file)
+        const saved = await api(path + '/' + intent.uploadId + '/' + intent.version + '/complete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
+        })
+        onSaved(saved, mode)
+        return
+      }
       const data = new FormData()
       data.append('file', file)
       const response = await apiFetch('/api/albums/' + item.albumId + '/photos/' + item.id, { method: 'PUT', body: data })

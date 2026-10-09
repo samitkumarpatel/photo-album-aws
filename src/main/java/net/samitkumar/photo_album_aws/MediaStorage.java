@@ -17,6 +17,10 @@ public interface MediaStorage {
      * and returns the full object key to use with {@link #open} and {@link #delete}.
      */
     String putObject(String relativeKey, String contentType, long size, InputStream content) throws IOException;
+
+    /** Copies an object already stored under a full key to a key relative to this storage root. */
+    String copyObject(String sourceObjectKey, String destinationRelativeKey, String contentType);
+
     InputStream open(String objectKey) throws IOException;
 
     /** Size in bytes of a stored object, or empty if it does not exist. */

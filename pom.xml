@@ -75,6 +75,10 @@
 			<artifactId>spring-cloud-aws-starter-s3</artifactId>
 		</dependency>
 		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>kms</artifactId>
+		</dependency>
+		<dependency>
 			<groupId>com.amazonaws.serverless</groupId>
 			<artifactId>aws-serverless-java-container-springboot4</artifactId>
 			<version>3.0.1</version>

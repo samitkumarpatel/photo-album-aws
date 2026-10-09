@@ -55,6 +55,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
       days_after_initiation = 1
     }
   }
+
+  dynamic "rule" {
+    for_each = {
+      for q in var.sqs : q.name => q
+      if q.s3_bucket == each.key && endswith(q.s3_prefix, "originals/")
+    }
+    content {
+      id     = "expire-replacement-uploads-${rule.key}"
+      status = "Enabled"
+
+      filter {
+        prefix = "${trimsuffix(rule.value.s3_prefix, "originals/")}replacement-uploads/"
+      }
+
+      expiration {
+        days = 1
+      }
+    }
+  }
 }
 
 # ObjectCreated events to the queues that ask for them (one notification resource per bucket).

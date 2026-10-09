@@ -21,6 +21,14 @@ public class InMemoryMediaStorage implements MediaStorage {
     }
 
     @Override
+    public String copyObject(String sourceObjectKey, String destinationRelativeKey, String contentType) {
+        byte[] content = objects.get(sourceObjectKey);
+        if (content == null) throw new IllegalStateException("Media object not found");
+        objects.put(destinationRelativeKey, content.clone());
+        return destinationRelativeKey;
+    }
+
+    @Override
     public InputStream open(String objectKey) throws IOException {
         byte[] content = objects.get(objectKey);
         if (content == null) throw new IOException("Media object not found");

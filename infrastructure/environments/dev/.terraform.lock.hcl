@@ -24,3 +24,4 @@ provider "registry.terraform.io/hashicorp/aws" {
     "zh:f4d293cd0e9562bfa1ba32a1fe5c3652c6a32b951e44081158737d4075696045",
   ]
 }
+

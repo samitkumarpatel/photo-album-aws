@@ -112,6 +112,67 @@ public class AlbumController {
         return new UploadIntent(photoId, signed.url(), "PUT", signed.headers(), signed.expiresAt());
     }
 
+    /** Presigned replacement upload; the staged object stays outside the S3 processing prefix until completion. */
+    @PostMapping("/{albumId}/photos/{photoId}/replacement")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ReplacementUploadIntent createReplacementUpload(@PathVariable UUID albumId, @PathVariable UUID photoId,
+                                                            @RequestBody CreateUpload request) {
+        if (request.size() == null || request.size() <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File size must be greater than zero");
+        if (request.size() > MAX_UPLOAD_BYTES) throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "Files can be at most 100 MB");
+        String contentType = mediaType(request.contentType());
+        if (!contentType.startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only image files can replace a photo");
+
+        Photo current = requirePhoto(requireAlbum(albumId), photoId);
+        if (!current.contentType().startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only photos can be edited");
+        if (current.status() == PhotoStatus.UPLOADING) throw photoNotFound();
+
+        String safeFilename = filename(request.filename(), current.filename());
+        UUID uploadId = UUID.randomUUID();
+        int version = nextVersion(current.objectKey());
+        String stagedKey = mediaStorage.objectKey(replacementUploadKey(albumId, photoId, uploadId, safeFilename, contentType));
+        var signed = uploadUrlSigner.presignPut(albumId, photoId, stagedKey, contentType, request.size());
+        return new ReplacementUploadIntent(uploadId, version, signed.url(), "PUT", signed.headers(), signed.expiresAt());
+    }
+
+    /** Promotes a staged replacement to its versioned original key and lets the S3 event start processing it. */
+    @PostMapping("/{albumId}/photos/{photoId}/replacement/{uploadId}/{version}/complete")
+    public PhotoResponse completeReplacementUpload(@PathVariable UUID albumId, @PathVariable UUID photoId,
+                                                   @PathVariable UUID uploadId, @PathVariable int version,
+                                                   @RequestBody CreateUpload request) {
+        if (request.size() == null || request.size() <= 0 || request.size() > MAX_UPLOAD_BYTES)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid replacement file size");
+        String contentType = mediaType(request.contentType());
+        if (!contentType.startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only image files can replace a photo");
+
+        Photo current = requirePhoto(requireAlbum(albumId), photoId);
+        if (!current.contentType().startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only photos can be edited");
+        if (current.status() == PhotoStatus.UPLOADING) throw photoNotFound();
+        if (nextVersion(current.objectKey()) != version) throw new ResponseStatusException(HttpStatus.CONFLICT, "The photo changed while it was being edited");
+
+        String safeFilename = filename(request.filename(), current.filename());
+        String extension = extension(safeFilename, contentType);
+        String stagedKey = mediaStorage.objectKey("replacement-uploads/" + albumId + "/" + photoId + "/" + uploadId + "." + extension);
+        long uploadedSize = mediaStorage.size(stagedKey)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "The replacement file has not been uploaded"));
+        if (uploadedSize != request.size()) throw new ResponseStatusException(HttpStatus.CONFLICT, "The uploaded file size does not match");
+
+        String relativeKey = originalKey(albumId, photoId, version, extension);
+        String nextObjectKey = mediaStorage.objectKey(relativeKey);
+        var updated = new Photo(photoId, safeFilename, contentType, request.size(), nextObjectKey, current.uploadedAt(), Instant.now(),
+                PhotoStatus.PROCESSING, null, null, current.takenAt(), current.thumbnailKey(), current.displayKey());
+        if (!repository.replacePhotoIfCurrent(albumId, updated, current.objectKey()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "The photo changed while it was being edited");
+
+        try {
+            mediaStorage.copyObject(stagedKey, relativeKey, contentType);
+        } catch (RuntimeException e) {
+            repository.replacePhotoIfCurrent(albumId, current, nextObjectKey);
+            throw e;
+        }
+        deleteMediaQuietly(stagedKey, albumId);
+        return photoResponse(updated, ownerPath(albumId, photoId), null);
+    }
+
     /**
      * Step two: the browser reports the PUT finished. Idempotent; on AWS the S3 event may even have let the worker
      * finish first. Only the call that moves the photo out of UPLOADING starts processing.
@@ -388,6 +449,10 @@ public class AlbumController {
         return "originals/" + albumId + "/" + photoId + "/v" + version + "." + extension;
     }
 
+    private static String replacementUploadKey(UUID albumId, UUID photoId, UUID uploadId, String filename, String contentType) {
+        return "replacement-uploads/" + albumId + "/" + photoId + "/" + uploadId + "." + extension(filename, contentType);
+    }
+
     /** The version after the given original; keys from before versioning count as version 1. */
     public static int nextVersion(String objectKey) {
         var matcher = VERSIONED_ORIGINAL.matcher(objectKey);
@@ -476,6 +541,8 @@ public class AlbumController {
     public record CreateUpload(String filename, String contentType, Long size) {}
     /** Where and how to PUT the file: send {@code headers} exactly; the URL stops working at {@code expiresAt}. */
     public record UploadIntent(UUID photoId, String uploadUrl, String method, Map<String, String> headers, Instant expiresAt) {}
+    public record ReplacementUploadIntent(UUID uploadId, int version, String uploadUrl, String method,
+                                          Map<String, String> headers, Instant expiresAt) {}
     /** An album as the API returns it. */
     public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos) {}
     /** A photo as the API returns it: no storage keys, but URLs to load it ({@code urls} is null while UPLOADING). */

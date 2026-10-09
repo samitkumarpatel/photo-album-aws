@@ -1,9 +1,10 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  project     = "photo-album"
-  environment = "dev"
-  region      = "eu-north-1"
+  project          = "photo-album"
+  environment      = "dev"
+  region           = "eu-north-1"
+  media_cdn_domain = "d38gufr7jg1s4v.cloudfront.net"
 
   lambda = {
     "photo-album-dev-api" = {
@@ -15,12 +16,15 @@ locals {
         "/actuator" = "/actuator"
       }
       environment = {
-        PHOTO_ALBUM_DATA_MODE       = "dynamodb"
-        PHOTO_ALBUM_TABLE           = "photo-album-dev"
-        PHOTO_ALBUM_STORAGE_MODE    = "s3"
-        PHOTO_ALBUM_S3_BUCKET       = "photo-album-dev-media-${data.aws_caller_identity.current.account_id}"
-        PHOTO_ALBUM_S3_PREFIX       = "photo-album"
-        PHOTO_ALBUM_PROCESSING_MODE = "events"
+        PHOTO_ALBUM_DATA_MODE               = "dynamodb"
+        PHOTO_ALBUM_TABLE                   = "photo-album-dev"
+        PHOTO_ALBUM_STORAGE_MODE            = "s3"
+        PHOTO_ALBUM_S3_BUCKET               = "photo-album-dev-media-${data.aws_caller_identity.current.account_id}"
+        PHOTO_ALBUM_S3_PREFIX               = "photo-album"
+        PHOTO_ALBUM_PROCESSING_MODE         = "events"
+        PHOTO_ALBUM_CDN_DOMAIN              = local.media_cdn_domain
+        PHOTO_ALBUM_CDN_KEY_PAIR_ID         = aws_cloudfront_public_key.media.id
+        PHOTO_ALBUM_CDN_SIGNING_KMS_KEY_ARN = aws_kms_key.media_signing.arn
       }
     }
     "photo-album-dev-worker" = {
@@ -54,6 +58,29 @@ locals {
   s3 = ["photo-album-dev-media-${data.aws_caller_identity.current.account_id}"]
 }
 
+resource "aws_kms_key" "media_signing" {
+  description              = "Signs CloudFront URLs for private photo media"
+  customer_master_key_spec = "RSA_2048"
+  key_usage                = "SIGN_VERIFY"
+  deletion_window_in_days  = 7
+}
+
+data "aws_kms_public_key" "media_signing" {
+  key_id = aws_kms_key.media_signing.key_id
+}
+
+resource "aws_cloudfront_public_key" "media" {
+  name        = "photo-album-dev-media-signing"
+  comment     = "Verifies private CloudFront photo URLs signed by AWS KMS"
+  encoded_key = data.aws_kms_public_key.media_signing.public_key_pem
+}
+
+resource "aws_cloudfront_key_group" "media" {
+  name    = "photo-album-dev-media-signing"
+  comment = "Trusted signer for private photo media URLs"
+  items   = [aws_cloudfront_public_key.media.id]
+}
+
 module "photo_album" {
   source = "../../stacks/backend/1.0.0"
 
@@ -78,9 +105,11 @@ module "frontend" {
     "photo-album",
   ])
 
-  name        = each.value
-  environment = local.environment
-  api_url     = module.photo_album.api_url
+  name               = each.value
+  environment        = local.environment
+  api_url            = module.photo_album.api_url
+  media_bucket_name  = one(module.photo_album.s3_buckets)
+  media_key_group_id = aws_cloudfront_key_group.media.id
 
   # Set both values to enable an ACM certificate, DNS validation, and a custom domain.
   domain_name     = null

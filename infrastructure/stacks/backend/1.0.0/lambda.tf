@@ -143,6 +143,18 @@ data "aws_iam_policy_document" "lambda" {
       resources = [for q in aws_sqs_queue.this : q.arn]
     }
   }
+
+  dynamic "statement" {
+    for_each = toset([
+      for f in values(var.lambda) : f.environment["PHOTO_ALBUM_CDN_SIGNING_KMS_KEY_ARN"]
+      if contains(keys(f.environment), "PHOTO_ALBUM_CDN_SIGNING_KMS_KEY_ARN")
+    ])
+    content {
+      sid       = "SignCloudFrontMediaUrls"
+      actions   = ["kms:Sign"]
+      resources = [statement.value]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {

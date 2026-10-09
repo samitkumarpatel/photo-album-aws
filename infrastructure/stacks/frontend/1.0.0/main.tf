@@ -4,7 +4,13 @@ locals {
   bucket_name     = "${var.name}-${var.environment}-${data.aws_caller_identity.current.account_id}-frontend"
   api_domain_name = trimsuffix(trimprefix(var.api_url, "https://"), "/")
   has_domain      = var.domain_name != null
+  has_media       = var.media_bucket_name != null
   common_tags     = merge(var.tags, { Site = var.name, Environment = var.environment })
+}
+
+data "aws_s3_bucket" "media" {
+  count  = local.has_media ? 1 : 0
+  bucket = var.media_bucket_name
 }
 
 resource "aws_s3_bucket" "frontend" {
@@ -49,6 +55,16 @@ resource "aws_s3_bucket_versioning" "frontend" {
 resource "aws_cloudfront_origin_access_control" "frontend" {
   name                              = "${var.name}-${var.environment}-frontend-oac"
   description                       = "Origin access control for ${var.name} ${var.environment} frontend"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+resource "aws_cloudfront_origin_access_control" "media" {
+  count = local.has_media ? 1 : 0
+
+  name                              = "${var.name}-${var.environment}-media-oac"
+  description                       = "Origin access control for ${var.name} ${var.environment} media"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
@@ -100,6 +116,15 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
+  dynamic "origin" {
+    for_each = local.has_media ? [1] : []
+    content {
+      domain_name              = data.aws_s3_bucket.media[0].bucket_regional_domain_name
+      origin_id                = "media-${var.media_bucket_name}"
+      origin_access_control_id = aws_cloudfront_origin_access_control.media[0].id
+    }
+  }
+
   default_cache_behavior {
     target_origin_id       = "s3-${aws_s3_bucket.frontend.id}"
     viewer_protocol_policy = "redirect-to-https"
@@ -125,6 +150,20 @@ resource "aws_cloudfront_distribution" "frontend" {
       compress                 = true
       cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # AWS Managed-CachingDisabled
       origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AWS Managed-AllViewerExceptHostHeader
+    }
+  }
+
+  dynamic "ordered_cache_behavior" {
+    for_each = local.has_media ? ["${var.media_path_prefix}/*"] : []
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      target_origin_id       = "media-${var.media_bucket_name}"
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+      cached_methods         = ["GET", "HEAD"]
+      compress               = true
+      cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # AWS Managed-CachingOptimized
+      trusted_key_groups     = [var.media_key_group_id]
     }
   }
 
@@ -156,6 +195,34 @@ resource "aws_cloudfront_distribution" "frontend" {
 resource "aws_s3_bucket_policy" "frontend" {
   bucket = aws_s3_bucket.frontend.id
   policy = data.aws_iam_policy_document.frontend_bucket.json
+}
+
+resource "aws_s3_bucket_policy" "media" {
+  count  = local.has_media ? 1 : 0
+  bucket = var.media_bucket_name
+  policy = data.aws_iam_policy_document.media_bucket[0].json
+}
+
+data "aws_iam_policy_document" "media_bucket" {
+  count = local.has_media ? 1 : 0
+
+  statement {
+    sid       = "AllowCloudFrontRead"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${data.aws_s3_bucket.media[0].arn}/*"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.frontend.arn]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "frontend_bucket" {

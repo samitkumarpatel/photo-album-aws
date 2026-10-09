@@ -17,7 +17,14 @@ public class SharedAlbumController {
     public SharedAlbumController(AlbumController albums) { this.albums = albums; }
 
     @GetMapping("/api/shared/{token}")
-    public AlbumController.AlbumResponse album(@PathVariable String token) { return albums.sharedAlbum(token); }
+    public ResponseEntity<AlbumController.AlbumResponse> album(@PathVariable String token) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(albums.sharedAlbum(token));
+    }
+
+    @GetMapping("/api/shared/{token}/status")
+    public ResponseEntity<java.time.Instant> status(@PathVariable String token) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore()).body(albums.sharedStatus(token));
+    }
 
     @GetMapping("/api/shared/{token}/photos/{photoId}")
     public ResponseEntity<StreamingResponseBody> photo(@PathVariable String token, @PathVariable UUID photoId,

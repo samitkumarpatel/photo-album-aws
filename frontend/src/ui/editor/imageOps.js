@@ -15,6 +15,7 @@ export const ADJUSTMENTS = [
   { key: 'sharpen', label: 'Sharpen', min: 0, max: 100 },
   { key: 'denoise', label: 'Denoise', min: 0, max: 100 },
   { key: 'grain', label: 'Grain', min: 0, max: 100 },
+  { key: 'blur', label: 'Blur', min: 0, max: 100 },
   { key: 'vignette', label: 'Vignette', min: 0, max: 100 },
 ]
 
@@ -35,6 +36,9 @@ export const FILTERS = [
   { id: 'mono', label: 'Mono', adjust: { contrast: 10 }, matrix: GRAY },
   { id: 'noir', label: 'Noir', adjust: { contrast: 45, exposure: -10, vignette: 35 }, matrix: GRAY },
   { id: 'sepia', label: 'Sepia', adjust: { fade: 10 }, matrix: SEPIA },
+  { id: 'portrait', label: 'Portrait', adjust: { warmth: 10, shadows: 18, highlights: -18, clarity: -20, vibrance: 12 } },
+  { id: 'landscape', label: 'Landscape', adjust: { clarity: 30, vibrance: 32, highlights: -25, shadows: 15, sharpen: 20 } },
+  { id: 'golden', label: 'Golden hour', adjust: { warmth: 45, tint: 8, fade: 10, highlights: -15 } },
 ]
 
 export const ASPECTS = [
@@ -58,6 +62,8 @@ export const DEFAULT_EDIT = Object.freeze({
   flipX: false,
   flipY: false,
   angle: 0,
+  text: { value: '', x: 50, y: 85, size: 6, color: '#ffffff' },
+  background: { on: false, fill: 'transparent', color: '#ffffff' },
 })
 
 export const sameEdit = (a, b) => JSON.stringify(a) === JSON.stringify(b)
@@ -167,6 +173,12 @@ export function processPixels(image, p) {
   if (p.clarity) clarity(image, p.clarity / 100, Math.max(2, Math.round(unit * 12)))
   if (p.sharpen > 0) sharpen(image, p.sharpen / 100 * 0.9)
   if (p.grain > 0) grain(image, p.grain / 100, Math.max(1, Math.round(unit)))
+  if (p.blur > 0) {
+    const blurred = boxBlur(d, width, height, Math.max(1, Math.round(unit * p.blur / 5)))
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = blurred[i]; d[i + 1] = blurred[i + 1]; d[i + 2] = blurred[i + 2]
+    }
+  }
   return image
 }
 
@@ -261,7 +273,7 @@ function sharpen(image, amount) {
  * mode "full" renders the whole (rotated/straightened) frame, used while cropping;
  * mode "final" applies the crop.
  */
-export function render(canvas, source, width, height, edit, params, mode = 'final') {
+export function render(canvas, source, width, height, edit, params, mode = 'final', backgroundMask = null) {
   const frame = orientedSize(width, height, edit.quarter)
   const region = mode === 'final'
     ? { x: edit.crop.x * frame.w, y: edit.crop.y * frame.h, w: edit.crop.w * frame.w, h: edit.crop.h * frame.h }
@@ -271,9 +283,39 @@ export function render(canvas, source, width, height, edit, params, mode = 'fina
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   drawTransformed(ctx, source, width, height, edit, region.x, region.y)
+  if (edit.background?.on && backgroundMask) {
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-in'
+    drawTransformed(ctx, backgroundMask, width, height, edit, region.x, region.y)
+    ctx.restore()
+  }
   if (params) {
     const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
     ctx.putImageData(processPixels(image, params), 0, 0)
+  }
+  if (edit.background?.on && backgroundMask && edit.background.fill === 'color') {
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-over'
+    ctx.fillStyle = edit.background.color
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
+  }
+  if (edit.text?.value.trim()) {
+    const text = edit.text
+    // Position in the cropped output; project into the full frame while adjusting the crop.
+    const cropW = frame.w * edit.crop.w, cropH = frame.h * edit.crop.h
+    const x = frame.w * edit.crop.x + cropW * text.x / 100 - region.x
+    const y = frame.h * edit.crop.y + cropH * text.y / 100 - region.y
+    const fontSize = Math.max(1, Math.min(cropW, cropH) * text.size / 100)
+    ctx.save()
+    ctx.font = `600 ${fontSize}px sans-serif`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.fillStyle = text.color
+    ctx.shadowColor = '#000000cc'; ctx.shadowBlur = fontSize / 6
+    ctx.shadowOffsetY = fontSize / 20
+    const lines = text.value.split('\n').slice(0, 5)
+    lines.forEach((line, i) => ctx.fillText(line, x, y + (i - (lines.length - 1) / 2) * fontSize * 1.2, cropW * 0.9))
+    ctx.restore()
   }
   return canvas
 }
@@ -292,13 +334,16 @@ export function scaledCopy(image, maxSide) {
 }
 
 /** Full-resolution export, capped to a pixel budget that mobile browsers can handle. */
-export async function exportBlob(image, edit, params, type) {
+export async function exportBlob(image, edit, params, type, backgroundMask = null) {
+  if (edit.background?.on && !backgroundMask) throw new Error('Remove the background before saving.')
+  if (edit.background?.on && edit.background.fill === 'transparent' && type !== 'image/png')
+    throw new Error('Save a transparent background as PNG.')
   const MAX_PIXELS = 16_000_000
   const width = image.naturalWidth, height = image.naturalHeight
   const frame = orientedSize(width, height, edit.quarter)
   const area = frame.w * edit.crop.w * frame.h * edit.crop.h
   const source = area > MAX_PIXELS ? scaledCopy(image, Math.max(width, height) * Math.sqrt(MAX_PIXELS / area)) : image
-  const canvas = render(document.createElement('canvas'), source, source.naturalWidth || source.width, source.naturalHeight || source.height, edit, params, 'final')
+  const canvas = render(document.createElement('canvas'), source, source.naturalWidth || source.width, source.naturalHeight || source.height, edit, params, 'final', backgroundMask)
   const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.92))
   if (!blob) throw new Error('Could not create the edited image.')
   return blob
@@ -344,11 +389,11 @@ export function analyze(image) {
 }
 
 /** Pick an output format the browser can encode, keeping the original when possible. */
-export function outputFormat(contentType, filename) {
+export function outputFormat(contentType, filename, transparent = false) {
   const keep = ['image/jpeg', 'image/png', 'image/webp']
-  const type = keep.includes(contentType) ? contentType : 'image/jpeg'
+  const type = transparent ? 'image/png' : keep.includes(contentType) ? contentType : 'image/jpeg'
   const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[type]
   const base = filename.replace(/\.[^.]+$/, '') || 'photo'
-  const name = keep.includes(contentType) ? filename : base + '.' + ext
+  const name = keep.includes(contentType) && type === contentType ? filename : base + '.' + ext
   return { type, name, copyName: base + '-edited.' + ext }
 }

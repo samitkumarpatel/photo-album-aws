@@ -120,7 +120,7 @@
 .ed-auto .ed-slider { padding: 0 4px; }
 
 /* tabs */
-.ed-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--ed-line); }
+.ed-tabs { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid var(--ed-line); }
 .ed-tabs button { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 60px; padding: 8px 0; border: 0; background: transparent; color: var(--ed-muted) !important; font-size: 12px; font-weight: 600; }
 .ed-tabs button.selected { color: var(--ed-accent) !important; }
 .ed-tab-icon { position: relative; display: inline-grid; }
@@ -142,3 +142,20 @@
   .ed-panel { margin-bottom: 20px; border: 1px solid var(--ed-line); border-radius: 22px; overflow: hidden; }
   .ed-strip { flex-wrap: wrap; justify-content: center; row-gap: 10px; overflow: visible; }
 }
+
+.ed-text-tools { max-height: min(42dvh, 350px); overflow-y: auto; padding: 0 4px 4px; display: flex; flex-direction: column; gap: 10px; }
+.ed-text-tools label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ed-muted); }
+.ed-text-tools textarea { width: 100%; box-sizing: border-box; resize: vertical; background: var(--ed-bg); border: 1px solid var(--ed-line); border-radius: 10px; padding: 10px; color: var(--ed-text); font: inherit; }
+.ed-caption-options { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ed-caption-options label { flex-direction: row; align-items: center; }
+.ed-caption-options input { width: 44px; height: 32px; border: 0; background: transparent; }
+
+.ed-transparent { background-color: #d6d6d6; background-image: conic-gradient(#aaa 25%, transparent 0 50%, #aaa 0 75%, transparent 0); background-size: 20px 20px; border-radius: 4px; }
+.ed-background-tools { display: flex; flex-direction: column; gap: 12px; padding: 0 16px 8px; max-height: 40dvh; overflow-y: auto; }
+.ed-background-tools .ed-hint { padding: 0; }
+.ed-background-actions, .ed-background-progress { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }
+.ed-background-tools .ed-secondary { padding: 10px 14px; border-radius: 999px; }
+.ed-background-tools label { display: flex; align-items: center; gap: 8px; color: var(--ed-muted); font-size: 14px; }
+.ed-background-tools input[type=color] { width: 44px; height: 32px; background: transparent; border: 0; }
+.ed-background-progress span { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; }
+@media (max-width: 380px) { .ed-tabs button { font-size: 10px; } }

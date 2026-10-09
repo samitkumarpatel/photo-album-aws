@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import CameraSpinner, { PageLoader } from './CameraSpinner.jsx'
 import {
   ArrowDownToLine, ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, Camera, Check, CheckCircle2, ChevronLeft, ChevronRight,
-  Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2,
+  Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2, LayoutGrid,
   Minimize2, Monitor, Moon, Pencil, RotateCcw, SlidersHorizontal, Sun, Trash2, TriangleAlert, Upload, X, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import { api } from './api.js'
@@ -15,12 +15,14 @@ import { completeUpload, createUpload, discardUpload, intentExpired, multipartUp
 const UI = createContext(null)
 const useUI = () => useContext(UI)
 const PhotoEditor = lazy(() => import('./editor/PhotoEditor.jsx'))
+const CollageEditor = lazy(() => import('./editor/CollageEditor.jsx'))
 const matches = (text, query) => text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
 const plural = (count, word) => count + ' ' + word + (count === 1 ? '' : 's')
 const sizeLabel = size => size < 1024 ? size + ' B' : size < 1048576 ? (size / 1024).toFixed(1) + ' KB' : (size / 1048576).toFixed(1) + ' MB'
 const units = [['HOURS', 'Hours'], ['DAYS', 'Days'], ['WEEKS', 'Weeks'], ['MONTHS', 'Months'], ['YEARS', 'Years']]
 const MAX_BYTES = 100 * 1048576
 const UPLOAD_CONCURRENCY = 3
+const activeShares = album => (album?.shares || []).filter(link => new Date(link.expiresAt).getTime() > Date.now())
 const pendingKey = items => items.filter(needsPolling).map(item => item.id).join(',')
 
 function countLabel(items) {
@@ -147,6 +149,8 @@ function App() {
   const [revision, setRevision] = useState(0)
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [creationItems, setCreationItems] = useState([])
+  const [collageItems, setCollageItems] = useState(null)
   const [upload, setUpload] = useState(null)
   const [dropActive, setDropActive] = useState(false)
   const [toast, setToast] = useState(null)
@@ -206,7 +210,7 @@ function App() {
 
   // Drop files anywhere on the page to upload them (into the open album when there is one).
   const dropState = useRef({})
-  dropState.current = { blocked: shared || !!upload || createOpen, albumId: currentAlbumId }
+  dropState.current = { blocked: shared || !!upload || createOpen || !!collageItems, albumId: currentAlbumId }
   useEffect(() => {
     let depth = 0
     const hasFiles = e => Array.from(e.dataTransfer?.types || []).includes('Files')
@@ -235,7 +239,8 @@ function App() {
 
   const context = {
     albums, loading, error, query, setQuery, refresh, revision, notify, staged,
-    createAlbum: () => setCreateOpen(true),
+    createAlbum: (items = []) => { setCreationItems(Array.isArray(items) ? items : []); setCreateOpen(true) },
+    createCollage: setCollageItems,
     uploadMedia: albumId => setUpload({ albumId }),
   }
 
@@ -256,20 +261,25 @@ function App() {
       <button className="fab" aria-label="Upload photos or videos" onClick={() => setUpload({ albumId: currentAlbumId })}><Plus size={26} /></button>
     </nav>
     {dropActive && <div className="drop-overlay" aria-hidden="true"><div><ImagePlus size={44} /><strong>Drop to upload</strong><span>Photos and videos up to 100 MB</span></div></div>}
-    {createOpen && <AlbumFormDialog
+    {createOpen && <AlbumFormDialog items={creationItems}
       close={() => setCreateOpen(false)}
       onSaved={async album => {
         setAlbums(previous => [album, ...previous]); setLoading(false); setCreateOpen(false); setQuery('')
         navigate('/albums/' + album.id)
-        notify('Album created. Add your first photos.')
+        notify(creationItems.length ? 'Album created with ' + plural(creationItems.length, 'item') : 'Album created. Add your first photos.')
+        setCreationItems([])
         await refresh()
       }} />}
     {upload && <UploadDialog
       albums={albums} albumId={upload.albumId} initialFiles={upload.files}
       close={() => setUpload(null)}
-      onCreate={() => { setUpload(null); setCreateOpen(true) }}
+      onCreate={() => { setUpload(null); setCreationItems([]); setCreateOpen(true) }}
       stage={stage} unstage={unstage}
       onUploaded={async count => { notify(plural(count, 'item') + ' uploaded'); await refresh() }} />}
+    {collageItems && <Suspense fallback={<div className="editor-loading"><CameraSpinner size={64} inherit label="Opening collage editor" /></div>}>
+      <CollageEditor items={collageItems} albums={albums} Dialog={Dialog} close={() => setCollageItems(null)}
+        onSaved={async () => { setCollageItems(null); notify('Collage saved to your album'); await refresh() }} />
+    </Suspense>}
     {toast && <div role="status" className="toast"><CheckCircle2 size={18} /><span>{toast}</span><button className="icon-button" onClick={() => setToast(null)} aria-label="Dismiss notification"><X size={16} /></button></div>}
   </UI.Provider>
 }
@@ -377,6 +387,54 @@ function Library() {
   </main>
 }
 
+function useSharingClock() {
+  const [, tick] = useState(0)
+  useEffect(() => { const timer = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(timer) }, [])
+}
+
+function SharingBadge({ album }) {
+  useSharingClock()
+  const links = activeShares(album)
+  return <span className={'sharing-badge' + (links.length ? ' shared' : '')}><Share2 size={13} />{album.shares == null ? 'Sharing status unavailable' : links.length ? 'Shared · ' + plural(links.length, 'active link') : 'Private'}</span>
+}
+
+function AlbumSharing({ album, onManage }) {
+  useSharingClock()
+  const links = activeShares(album)
+  return <div className="album-sharing"><SharingBadge album={album} />
+    {links.length > 0 && <span>Next link expires {new Date(links[0].expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>}
+    <button className="button secondary" onClick={onManage}>{links.length ? 'View links & revoke' : 'Sharing settings'}</button>
+  </div>
+}
+
+function useMediaSelection(items) {
+  const [enabled, setEnabled] = useState(false)
+  const [ids, setIds] = useState(() => new Set())
+  const { createAlbum, createCollage } = useUI()
+  const ready = items.filter(item => statusOf(item) === 'READY')
+  const chosen = ready.filter(item => ids.has(item.id))
+  const cancel = () => { setEnabled(false); setIds(new Set()) }
+  return { enabled, setEnabled, ids, chosen, cancel,
+    toggle: id => setIds(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else if (next.size < 100) next.add(id); return next }),
+    selectAll: visible => setIds(new Set(visible.filter(item => statusOf(item) === 'READY').slice(0, 100).map(item => item.id))),
+    create: () => createAlbum(chosen),
+    collage: () => createCollage(chosen),
+  }
+}
+
+function SelectionToolbar({ selection, visible }) {
+  if (!selection.enabled) return visible.some(item => statusOf(item) === 'READY') && <div className="selection-toolbar"><button className="button secondary" onClick={() => selection.setEnabled(true)}><CheckCircle2 size={18} />Select photos & videos</button></div>
+  const canCollage = selection.chosen.length >= 2 && selection.chosen.length <= 9 && selection.chosen.every(item => !isVideo(item))
+  return <div className="selection-toolbar" role="region" aria-label="Media selection">
+    <span role="status">{plural(selection.chosen.length, 'item')} selected · up to 100</span>
+    <button className="button secondary" onClick={() => selection.selectAll(visible)}>Select visible</button>
+    <button className="button secondary" onClick={selection.cancel}>Cancel selection</button>
+    <button className="button primary" disabled={!selection.chosen.length} onClick={selection.create}><FolderPlus size={18} />Create album</button>
+    <button className="button secondary" disabled={!canCollage} onClick={selection.collage} aria-describedby={canCollage ? undefined : 'collage-selection-hint'}><LayoutGrid size={18} />Create collage</button>
+    {!canCollage && <small id="collage-selection-hint" className="selection-hint">For a collage, select 2–9 photos.</small>}
+  </div>
+}
+
 function AlbumCard({ album, index }) {
   const photos = album.photos || []
   const cover = photos.find(item => statusOf(item) === 'READY') || photos.find(isViewable)
@@ -389,6 +447,7 @@ function AlbumCard({ album, index }) {
       </span>
     </span>
     <span className="album-title">{album.name}</span>
+    <SharingBadge album={album} />
     <span className="album-meta">{photos.length ? plural(photos.length, 'item') : 'Created ' + new Date(album.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
   </Link>
 }
@@ -421,6 +480,7 @@ function PhotoLibrary() {
   const { albums, loading, error, query, setQuery, refresh, uploadMedia, staged, notify } = useUI()
   const items = useMemo(() => albums.flatMap(album => withStaged(album.photos || [], staged, album.id).map(item => ({ ...item, albumId: album.id, albumName: album.name }))), [albums, staged])
   const filters = useMediaFilters(items, query)
+  const selection = useMediaSelection(items)
   const viewable = useMemo(() => filters.filtered.filter(isViewable), [filters.filtered])
   const [params, setParams] = useSearchParams()
   const [deleting, setDeleting] = useState(null)
@@ -437,10 +497,11 @@ function PhotoLibrary() {
     <Hero title="Photos" description={loading ? 'Loading your library…' : query ? plural(filters.filtered.length, 'match') + ' for “' + query.trim() + '”' : countLabel(items)}>
       <button className="button primary" onClick={() => uploadMedia()}><Upload size={18} />Upload</button>
     </Hero>
+    <SelectionToolbar selection={selection} visible={filters.filtered} />
     <MediaToolbar filters={filters} items={items} />
     <ErrorNotice message={error} retry={refresh} />
     {loading ? <PageLoader label="Loading your photos…" />
-      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} />
+      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} />
       : error ? null
       : <Empty title={items.length ? 'Nothing matches' : 'Make room for your moments'} description={items.length ? 'Try a different filter or search.' : 'Upload photos and videos, or drop them anywhere on this page.'}>
           <button className="button primary" onClick={items.length ? () => { filters.setType('all'); setQuery('') } : () => uploadMedia()}>{items.length ? 'Reset filters' : <><Upload size={18} />Upload photos</>}</button>
@@ -488,7 +549,7 @@ function ThumbnailMedia({ item, src, quiet }) {
   return <>{spinner}<img ref={imgRef} className={(loaded ? 'loaded' : '') + (aspect ? ' sized' : '')} style={aspect} src={src} alt={item.filename} loading="lazy" decoding="async" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} /></>
 }
 
-function MediaTile({ item, index, onOpen, onDelete }) {
+function MediaTile({ item, index, onOpen, onDelete, selection }) {
   const status = statusOf(item)
   const style = { '--i': Math.min(index, 12) }
   if (isBroken(item)) {
@@ -503,15 +564,16 @@ function MediaTile({ item, index, onOpen, onDelete }) {
   const pending = status === 'UPLOADING' || status === 'PROCESSING'
   const open = isViewable(item)
   const state = status === 'UPLOADING' ? 'Uploading' : 'Processing'
-  return <button className={'media-tile' + (pending ? ' pending' : '')} style={style} aria-disabled={open ? undefined : true}
-    onClick={() => { if (open) onOpen(item) }} aria-label={!pending ? 'View ' + item.filename : open ? 'View ' + item.filename + ' (processing)' : state + ' ' + item.filename}>
+  return <button className={'media-tile' + (pending ? ' pending' : '') + (selection?.ids.has(item.id) ? ' media-selected' : '')} style={style} aria-pressed={selection?.enabled ? selection.ids.has(item.id) : undefined} aria-disabled={(selection?.enabled ? status === 'READY' : open) ? undefined : true}
+    onClick={() => { if (selection?.enabled) { if (status === 'READY') selection.toggle(item.id) } else if (open) onOpen(item) }} aria-label={selection?.enabled ? (selection.ids.has(item.id) ? 'Deselect ' : 'Select ') + item.filename + (status !== 'READY' ? ' (not ready)' : '') : !pending ? 'View ' + item.filename : open ? 'View ' + item.filename + ' (processing)' : state + ' ' + item.filename}>
     <Thumbnail item={item} />
+    {selection?.enabled && <span className="selection-check" aria-hidden="true">{selection.ids.has(item.id) && <Check size={18} />}</span>}
     {pending && <span className="tile-status" aria-hidden="true"><CameraSpinner size={30} inherit decorative /><span>{state}…</span></span>}
     <span className="media-label">{item.filename}</span>
   </button>
 }
 
-function MediaGroups({ items, onOpen, onDelete }) {
+function MediaGroups({ items, onOpen, onDelete, selection }) {
   const groups = items.reduce((all, item) => {
     const date = new Date(item.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
     ;(all[date] ||= []).push(item)
@@ -519,7 +581,7 @@ function MediaGroups({ items, onOpen, onDelete }) {
   }, {})
   return Object.entries(groups).map(([date, media]) => <section className="date-group" key={date}>
     <h2 className="group-heading"><span>{date}</span></h2>
-    <Masonry items={media} render={(item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} />} />
+    <Masonry items={media} render={(item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} />} />
   </section>)
 }
 
@@ -586,8 +648,9 @@ function useAlbum(path, revision = 0) {
     const value = await api(path)
     setRecord(previous => previous?.path === path ? { path, album: value } : previous)
   }, [path])
+  const invalidate = useCallback(message => { setRecord(null); setError(message); setLoading(false) }, [])
   const album = record?.path === path ? record.album : null
-  return { album, loading: loading || (!album && !error), error, reload, retry: () => setRetry(value => value + 1) }
+  return { album, loading: loading || (!album && !error), error, reload, invalidate, retry: () => setRetry(value => value + 1) }
 }
 
 function coverOf(items) {
@@ -607,6 +670,7 @@ function AlbumPage() {
   const navigate = useNavigate()
   const items = useMemo(() => withStaged(state.album?.photos || [], staged, albumId).map(item => ({ ...item, albumId, albumName: state.album?.name })), [state.album, staged, albumId])
   const filters = useMediaFilters(items, query)
+  const selection = useMediaSelection(items)
   const viewable = useMemo(() => filters.filtered.filter(isViewable), [filters.filtered])
   const selected = items.find(item => item.id === params.get('media') && isViewable(item))
   // Poll the album while photos are processing; refresh the library once they have all settled.
@@ -640,15 +704,17 @@ function AlbumPage() {
       : state.album ? <>
           <Hero back={back} cover={coverOf(items)} title={state.album.name} description={[state.album.description, countLabel(items)].filter(Boolean).join(' — ')}>
             <button className="button primary" onClick={() => uploadMedia(albumId)}><ImagePlus size={18} />Add photos</button>
-            <button className="button secondary" onClick={() => setShareOpen(true)}><Share2 size={17} />Share</button>
+            <button className="button secondary" onClick={() => setShareOpen(true)}><Share2 size={17} />{activeShares(state.album).length ? "Manage sharing" : "Share"}</button>
             <Menu label="Album options" className="button secondary round" align="right" icon={<Ellipsis size={20} />} items={[
               { key: 'rename', label: 'Rename', icon: <Pencil size={18} />, onSelect: () => setEditing(true) },
               { key: 'delete', label: 'Delete album', icon: <Trash2 size={18} />, danger: true, onSelect: () => setRemovingAlbum(true) },
             ]} />
           </Hero>
+          <AlbumSharing album={state.album} onManage={() => setShareOpen(true)} />
           <ErrorNotice message={state.error} retry={state.retry} />
+          <SelectionToolbar selection={selection} visible={filters.filtered} />
           <MediaToolbar filters={filters} items={items} />
-          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} />
+          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} />
             : items.length ? <Empty icon={Search} title="Nothing matches" description="Try a different search or filter."><button className="button secondary" onClick={() => { setQuery(''); filters.setType('all') }}>Reset filters</button></Empty>
             : <button className="drop-hint" onClick={() => uploadMedia(albumId)}><ImagePlus size={34} /><strong>Add the first photos</strong><span>Tap to choose, or drag files anywhere on this page</span></button>}
         </>
@@ -656,7 +722,7 @@ function AlbumPage() {
     {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={closeViewer} onDelete={() => setDeleting(selected)} onEdit={() => photoEdit.edit(selected)} />}
     {photoEdit.editor}
     {deleting && <DeleteDialog item={deleting} close={() => setDeleting(null)} onDelete={deleteMedia} />}
-    {shareOpen && <ShareDialog album={state.album} close={() => setShareOpen(false)} notify={notify} />}
+    {shareOpen && <ShareDialog album={state.album} close={() => setShareOpen(false)} notify={notify} onChanged={refresh} />}
     {editing && <AlbumFormDialog album={state.album} close={() => setEditing(false)} onSaved={async () => { setEditing(false); notify('Album updated'); await refresh() }} />}
     {removingAlbum && <DeleteAlbumDialog album={state.album} count={items.length} close={() => setRemovingAlbum(false)} onDelete={deleteAlbum} />}
   </main>
@@ -688,7 +754,7 @@ function Dialog({ title, description, close, busy = false, children, wide = fals
   </dialog>
 }
 
-function AlbumFormDialog({ album, close, onSaved }) {
+function AlbumFormDialog({ album, items = [], close, onSaved }) {
   const editing = !!album
   const [name, setName] = useState(album?.name || '')
   const [description, setDescription] = useState(album?.description || '')
@@ -700,14 +766,14 @@ function AlbumFormDialog({ album, close, onSaved }) {
     if (!name.trim() || unchanged) return
     setBusy(true); setError('')
     try {
-      const body = JSON.stringify({ name: name.trim(), description: description.trim() })
+      const body = JSON.stringify({ name: name.trim(), description: description.trim(), ...(items.length ? { items: items.map(item => ({ albumId: item.albumId, photoId: item.id })) } : {}) })
       const headers = { 'Content-Type': 'application/json' }
-      await onSaved(await api(editing ? '/api/albums/' + album.id : '/api/albums', { method: editing ? 'PATCH' : 'POST', headers, body }))
+      await onSaved(await api(editing ? '/api/albums/' + album.id : items.length ? '/api/albums/from-selection' : '/api/albums', { method: editing ? 'PATCH' : 'POST', headers, body }))
     }
     catch (e) { setError(e.message) }
     finally { setBusy(false) }
   }
-  return <Dialog title={editing ? 'Rename album' : 'New album'} description={editing ? undefined : 'Give your photos a place to belong.'} close={close} busy={busy}>
+  return <Dialog title={editing ? 'Rename album' : 'New album'} description={editing ? undefined : items.length ? countLabel(items) + ' will be copied into a new private album. Share it whenever you’re ready.' : 'Give your photos a place to belong.'} close={close} busy={busy}>
     <form onSubmit={submit}>
       <label className="field">Name<input data-autofocus required maxLength={90} value={name} onChange={e => setName(e.target.value)} onFocus={e => editing && e.target.select()} placeholder="Summer by the sea" /></label>
       <label className="field">Description <span>Optional</span><textarea rows={2} maxLength={240} value={description} onChange={e => setDescription(e.target.value)} placeholder="A little note about this collection" /></label>
@@ -983,7 +1049,8 @@ function DeleteDialog({ item, close, onDelete }) {
 
 const presets = [['HOURS', '1 hour'], ['DAYS', '1 day'], ['WEEKS', '1 week'], ['MONTHS', '1 month']]
 
-function ShareDialog({ album, close, notify }) {
+function ShareDialog({ album, close, notify, onChanged }) {
+  useSharingClock()
   const [amount, setAmount] = useState(1)
   const [unit, setUnit] = useState('WEEKS')
   const [custom, setCustom] = useState(false)
@@ -994,40 +1061,45 @@ function ShareDialog({ album, close, notify }) {
   const [links, setLinks] = useState(null)
   const [revoking, setRevoking] = useState(null)
   const linkInput = useRef(null)
+  const visibleLinks = (links || []).filter(l => new Date(l.expiresAt).getTime() > Date.now())
   const link = share ? location.origin + '/share/' + share.token : ''
   const loadLinks = useCallback(async () => {
     try { setLinks(await api('/api/albums/' + album.id + '/shares')) }
-    catch { setLinks([]) }
+    catch (e) { setError(e.message) }
   }, [album.id])
   useEffect(() => { loadLinks() }, [loadLinks])
   async function create(e) {
     e.preventDefault(); setBusy(true); setError('')
-    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })); loadLinks() }
+    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })); setCopied(false); await loadLinks(); await onChanged?.() }
     catch (e) { setError(e.message) }
     finally { setBusy(false) }
   }
   async function revoke(token) {
     setRevoking(token); setError('')
-    try { await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' }); setLinks(ls => ls.filter(l => l.token !== token)); notify('Link revoked') }
+    try { await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' }); setLinks(ls => (ls || []).filter(l => l.token !== token)); if (share?.token === token) { setShare(null); setCopied(false) }; notify('Link revoked'); await onChanged?.() }
     catch (e) { setError(e.message) }
     finally { setRevoking(null) }
   }
-  async function copy() {
-    try { await navigator.clipboard.writeText(link); setCopied(true); notify('Link copied') }
+  async function copy(value = link) {
+    try { await navigator.clipboard.writeText(value); if (value === link) setCopied(true); notify('Link copied') }
     catch { linkInput.current?.focus(); linkInput.current?.select(); setError('Select the link and copy it manually.') }
   }
   async function nativeShare() {
     try { await navigator.share({ title: album.name, url: link }) }
     catch (e) { if (e.name !== 'AbortError') setError('Could not open sharing. Copy the link instead.') }
   }
-  return <Dialog title={'Share “' + album.name + '”'} description="Anyone with the link can view this album. Only you can add or delete." close={close} busy={busy}>
-    {!!links?.length && <div className="share-links">
+  return <Dialog title={'Share “' + album.name + '”'} description="Anyone with the link can view this album. Revoke any link below to stop new visits. Media already opened may remain accessible for up to 5 minutes. Saved copies cannot be recalled." close={close} busy={busy || !!revoking}>
+    {links === null && !error && <p role="status">Loading sharing status…</p>}
+    {links !== null && visibleLinks.length === 0 && <p className="expiry-summary">Private album · No active share links</p>}
+    {!!visibleLinks.length && <div className="share-links">
       <p className="field-label">Active links</p>
       <ul>
-        {links.map(l => <li key={l.token} className="share-link-row">
+        {visibleLinks.map(l => <li key={l.token} className="share-link-row">
           <span><Clock3 size={14} />Expires {new Date(l.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
-          <button type="button" className="icon-button" aria-label="Revoke this link" disabled={revoking === l.token} onClick={() => revoke(l.token)}>
-            {revoking === l.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}
+          <a className="pill" href={location.origin + "/share/" + l.token} target="_blank" rel="noreferrer">Open link</a>
+          <button type="button" className="button secondary" onClick={() => copy(location.origin + '/share/' + l.token)}><Copy size={16} />Copy</button>
+          <button type="button" className="button secondary" aria-label="Revoke this link" disabled={!!revoking} onClick={() => revoke(l.token)}>
+            {revoking === l.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}Revoke
           </button>
         </li>)}
       </ul>
@@ -1054,7 +1126,7 @@ function ShareDialog({ album, close, notify }) {
     </form> : <>
       <div className="link-box">
         <input ref={linkInput} value={link} readOnly onFocus={e => e.target.select()} aria-label="Share link" />
-        <button className="button primary" onClick={copy}>{copied ? <Check size={18} /> : <Copy size={18} />}{copied ? 'Copied' : 'Copy'}</button>
+        <button className="button primary" onClick={() => copy()}>{copied ? <Check size={18} /> : <Copy size={18} />}{copied ? 'Copied' : 'Copy'}</button>
       </div>
       <div className="expiry-summary"><Clock3 size={16} /><span>Expires {new Date(share.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
       <ErrorNotice message={error} />
@@ -1086,6 +1158,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit }) {
   const [hiRes, setHiRes] = useState(false)
   const [sharpening, setSharpening] = useState(false)
   const [videoReady, setVideoReady] = useState(false)
+  const playback = useRef({ id: current.id, time: 0 })
   const [drag, setDrag] = useState({ x: 0, y: 0, active: false })
   const index = Math.max(0, items.findIndex(item => item.id === current.id))
   const video = isVideo(current)
@@ -1112,6 +1185,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit }) {
     setHiRes(false)
     setSharpening(false)
     setVideoReady(false)
+    playback.current = { id: current.id, time: 0 }
     setDrag({ x: 0, y: 0, active: false })
     strip.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
     for (const offset of [1, -1]) {
@@ -1322,7 +1396,10 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit }) {
     </div>
     <div ref={stage} className={'viewer-stage' + (zoomed ? ' zoomed' : '')} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}>
       {video
-        ? <video key={current.id} src={src} controls playsInline autoPlay onLoadedData={() => setVideoReady(true)} onError={() => setVideoReady(true)} />
+        ? <video key={current.id} src={src} controls playsInline autoPlay
+            onTimeUpdate={e => { if (e.currentTarget.readyState >= 2) playback.current = { id: current.id, time: e.currentTarget.currentTime } }}
+            onLoadedMetadata={e => { if (playback.current.id === current.id && playback.current.time > 0) e.currentTarget.currentTime = playback.current.time }}
+            onLoadedData={() => setVideoReady(true)} onError={() => setVideoReady(true)} />
         : <img key={current.id} ref={img} src={src} alt={current.filename} draggable={false} decoding="async" className={full ? 'sized' : undefined}
             onLoad={e => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} onError={() => setNatural({ w: 0, h: 0 })}
             style={full ? { '--w': String(full.w), '--ar': String(full.w / full.h), ...imageStyle } : imageStyle} />}
@@ -1370,6 +1447,28 @@ function SharedAlbumPage() {
   const { token } = useParams()
   const state = useAlbum('/api/shared/' + token)
   const [selected, setSelected] = useState(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    let running = false
+    const check = async (refresh = false) => {
+      if (document.hidden || running || controller.signal.aborted) return
+      running = true
+      try {
+        await api('/api/shared/' + token + '/status', { signal: controller.signal, cache: 'no-store' })
+        if (refresh && !controller.signal.aborted) await state.reload()
+      } catch (e) {
+        if (!controller.signal.aborted && (e.status === 404 || e.status === 410)) {
+          state.invalidate(e.status === 410 ? 'This share link has expired.' : 'This share link is no longer available.')
+          setSelected(null)
+        }
+      } finally { running = false }
+    }
+    const statusTimer = setInterval(() => check(), 30000)
+    const mediaTimer = setInterval(() => check(true), 240000)
+    const visible = () => { if (!document.hidden) check(true) }
+    document.addEventListener('visibilitychange', visible)
+    return () => { controller.abort(); clearInterval(statusTimer); clearInterval(mediaTimer); document.removeEventListener('visibilitychange', visible) }
+  }, [token, state.reload, state.invalidate])
   // Signed `urls` from the API win; `url` is the fallback for backends that stream through the share endpoint.
   const items = useMemo(() => (state.album?.photos || []).filter(isViewable).map(item => ({ ...item, url: '/api/shared/' + token + '/photos/' + item.id })), [state.album, token])
   usePolling(pendingKey(items), state.reload)
@@ -1389,7 +1488,7 @@ function SharedAlbumPage() {
         : <Empty icon={Clock3} title={expired ? 'This link has expired' : 'This album is unavailable'} description={expired ? 'Ask the album owner for a new share link.' : 'Check your connection or ask the album owner for a new link.'}>
             <button className="button secondary" onClick={state.retry}>Try again</button>
           </Empty>}
-      {selected && <Viewer items={items} current={selected} onChange={setSelected} close={() => setSelected(null)} />}
+      {state.album && selected && <Viewer items={items} current={items.find(item => item.id === selected.id) || selected} onChange={setSelected} close={() => setSelected(null)} />}
     </main>
   </div>
 }

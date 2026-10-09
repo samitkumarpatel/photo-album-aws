@@ -47,6 +47,53 @@ class AlbumControllerTests {
     }
 
     @Test
+    void selectedPhotosAndVideosAreIndependentPrivateCopies() throws IOException {
+        var source = controller.createAlbum(new AlbumController.CreateAlbum("Source", null));
+        var image = controller.uploadPhoto(source.id(), new MockMultipartFile("file", "a.jpg", "image/jpeg", new byte[]{1, 2}));
+        var video = controller.uploadPhoto(source.id(), new MockMultipartFile("file", "clip.mp4", "video/mp4", new byte[]{3, 4}));
+        repository.replacePhoto(source.id(), stored(source.id(), image.id()).withStatus(PhotoStatus.READY));
+        repository.replacePhoto(source.id(), stored(source.id(), video.id()).withStatus(PhotoStatus.READY));
+        controller.createShare(source.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS));
+        var selectedImage = new AlbumController.SelectedMedia(source.id(), image.id());
+        var copied = controller.createFromSelection(new AlbumController.CreateSelectedAlbum(" Favorites ", "Mixed media",
+                List.of(selectedImage, new AlbumController.SelectedMedia(source.id(), video.id()), selectedImage)));
+        assertEquals("Favorites", copied.name());
+        assertEquals(2, copied.photos().size());
+        assertTrue(copied.shares().isEmpty());
+        assertTrue(copied.photos().stream().noneMatch(p -> p.id().equals(image.id()) || p.id().equals(video.id())));
+        controller.deleteAlbum(source.id());
+        for (var photo : copied.photos()) {
+            var bytes = storage.open(stored(copied.id(), photo.id()).objectKey()).readAllBytes();
+            assertArrayEquals(photo.contentType().startsWith("video/") ? new byte[]{3, 4} : new byte[]{1, 2}, bytes);
+            assertTrue(processed.contains(photo.id()));
+        }
+    }
+
+    @Test
+    void selectionRejectsUnfinishedMediaAndRollsBackFailedCopies() throws IOException {
+        var source = controller.createAlbum(new AlbumController.CreateAlbum("Source", null));
+        var photo = controller.uploadPhoto(source.id(), new MockMultipartFile("file", "a.jpg", "image/jpeg", new byte[]{1}));
+        var request = new AlbumController.CreateSelectedAlbum("New", null, List.of(new AlbumController.SelectedMedia(source.id(), photo.id())));
+        assertStatus(HttpStatus.CONFLICT, () -> controller.createFromSelection(request));
+        repository.replacePhoto(source.id(), stored(source.id(), photo.id()).withStatus(PhotoStatus.READY));
+        storage.delete(stored(source.id(), photo.id()).objectKey());
+        assertThrows(IllegalStateException.class, () -> controller.createFromSelection(request));
+        assertEquals(List.of(source.id()), controller.listAlbums().stream().map(AlbumController.AlbumResponse::id).toList());
+    }
+
+    @Test
+    void ownersSeeActiveSharesAndPublicViewsDoNotExposeTokens() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var share = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS));
+        assertEquals(List.of(share), controller.getAlbum(album.id()).shares());
+        assertNull(controller.sharedAlbum(share.token()).shares());
+        assertEquals(share.expiresAt(), controller.sharedStatus(share.token()));
+        controller.revokeShare(album.id(), share.token());
+        assertTrue(controller.getAlbum(album.id()).shares().isEmpty());
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.sharedStatus(share.token()));
+    }
+
+    @Test
     void renamesAlbumAndKeepsMedia() throws IOException {
         var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", "old"));
         controller.uploadPhoto(album.id(), new MockMultipartFile("file", "a.jpg", "image/jpeg", new byte[]{1, 2}));
@@ -361,8 +408,14 @@ class AlbumControllerTests {
 
         var share = redirecting.createShare(album.id(), new AlbumController.CreateShare(2, AlbumController.DurationUnit.HOURS));
         assertEquals("https://cdn.example/" + key + "?size=original", redirecting.sharedAlbum(share.token()).photos().getFirst().urls().original());
-        assertEquals(share.expiresAt(), notAfter.get());
+        assertTrue(notAfter.get().isBefore(share.expiresAt()));
+        assertTrue(notAfter.get().isBefore(Instant.now().plus(Duration.ofMinutes(5))));
         assertEquals(HttpStatus.FOUND, redirecting.getSharedPhoto(share.token(), photo.id(), null, false).getStatusCode());
+        assertTrue(notAfter.get().isBefore(Instant.now().plus(Duration.ofMinutes(5))));
+        Instant soon = Instant.now().plusSeconds(10);
+        repository.saveShare("soon", new AlbumController.Share(album.id(), soon));
+        redirecting.sharedAlbum("soon");
+        assertEquals(soon, notAfter.get());
     }
 
     @Test

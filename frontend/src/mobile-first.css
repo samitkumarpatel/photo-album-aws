@@ -562,3 +562,20 @@ main:focus { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Collection selection and owner sharing status. */
+.selection-toolbar, .album-sharing { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
+.selection-toolbar { padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+.selection-toolbar > span { margin-right: auto; font-size: 14px; }
+.sharing-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+.sharing-badge.shared { color: var(--accent); }
+.album-sharing > span { color: var(--muted); font-size: 13px; }
+.album-sharing > button { margin-left: auto; }
+.media-tile.media-selected { outline: 3px solid var(--accent); outline-offset: 2px; }
+.selection-check { position: absolute; top: 10px; left: 10px; width: 26px; height: 26px; display: grid; place-items: center; border: 2px solid white; border-radius: 50%; color: var(--on-accent); background: #0006; box-shadow: 0 1px 5px #0005; }
+.media-selected .selection-check { background: var(--accent); }
+.share-link-row { flex-wrap: wrap; }
+.share-link-row > span { flex: 1 1 180px; }
+@media (max-width: 480px) { .selection-toolbar .button { flex: 1 1 auto; } .selection-toolbar > span { flex-basis: 100%; } }
+
+.selection-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; }

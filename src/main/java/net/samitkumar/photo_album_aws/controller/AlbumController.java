@@ -69,6 +69,44 @@ public class AlbumController {
         return ownerView(album);
     }
 
+    /** Independent copies: deleting or editing a source album cannot change the new collection. */
+    @PostMapping("/from-selection")
+    @ResponseStatus(HttpStatus.CREATED)
+    public AlbumResponse createFromSelection(@Valid @RequestBody CreateSelectedAlbum request) {
+        if (request.items() == null || request.items().isEmpty() || request.items().size() > 100)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Select between 1 and 100 photos or videos");
+        List<Photo> sources = new ArrayList<>();
+        for (SelectedMedia selected : request.items().stream().distinct().toList()) {
+            if (selected == null || selected.albumId() == null || selected.photoId() == null)
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid media selection");
+            Photo photo = requirePhoto(requireAlbum(selected.albumId()), selected.photoId());
+            if (photo.status() != PhotoStatus.READY)
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Wait for selected items to finish processing");
+            sources.add(photo);
+        }
+        var album = new Album(UUID.randomUUID(), request.name().trim(), request.description() == null ? "" : request.description().trim(), Instant.now(), List.of());
+        repository.create(album);
+        try {
+            for (Photo source : sources) {
+                UUID id = UUID.randomUUID();
+                String relativeKey = originalKey(album.id(), id, 1, extension(source.filename(), source.contentType()));
+                String key = mediaStorage.objectKey(relativeKey);
+                var photo = new Photo(id, source.filename(), source.contentType(), source.size(), key, Instant.now(), source.editedAt(),
+                        PhotoStatus.PROCESSING, source.width(), source.height(), source.takenAt(), null, null);
+                if (!repository.addPhoto(album.id(), photo)) throw albumNotFound();
+                mediaStorage.copyObject(source.objectKey(), relativeKey, source.contentType());
+            }
+            Album created = requireAlbum(album.id());
+            for (Photo photo : created.photos()) processingTrigger.uploaded(album.id(), photo.id());
+            return ownerView(requireAlbum(album.id()));
+        } catch (RuntimeException e) {
+            repository.delete(album.id());
+            deletePrefixQuietly(album.id(), "originals/" + album.id() + "/");
+            deletePrefixQuietly(album.id(), "derived/" + album.id() + "/");
+            throw e;
+        }
+    }
+
     @GetMapping("/{albumId}")
     public AlbumResponse getAlbum(@PathVariable UUID albumId) { return ownerView(requireAlbum(albumId)); }
 
@@ -315,8 +353,16 @@ public class AlbumController {
         var shared = requireSharedAlbum(token);
         Album album = shared.album();
         var photos = album.photos().stream().filter(AlbumController::sharedVisible)
-                .map(p -> photoResponse(p, sharedPath(token, p.id()), shared.expiresAt())).toList();
+                .map(p -> photoResponse(p, sharedPath(token, p.id()), sharedMediaExpiry(shared.expiresAt()))).toList();
         return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos);
+    }
+
+    public Instant sharedStatus(String token) { return requireSharedAlbum(token).expiresAt(); }
+
+    /** Revoked links cannot issue new URLs; existing CDN/S3 URLs live for at most five more minutes. */
+    private static Instant sharedMediaExpiry(Instant expiresAt) {
+        Instant limit = Instant.now().plus(Duration.ofMinutes(5));
+        return expiresAt.isBefore(limit) ? expiresAt : limit;
     }
 
     public ResponseEntity<StreamingResponseBody> getSharedPhoto(String token, UUID photoId, String size, boolean download) {
@@ -324,7 +370,7 @@ public class AlbumController {
         var shared = requireSharedAlbum(token);
         Photo photo = requirePhoto(shared.album(), photoId);
         if (!sharedVisible(photo)) throw photoNotFound();
-        return mediaResponse(photo, mediaSize, download, sharedPath(token, photoId), shared.expiresAt());
+        return mediaResponse(photo, mediaSize, download, sharedPath(token, photoId), sharedMediaExpiry(shared.expiresAt()));
     }
 
     /* ---------- responses ---------- */
@@ -337,7 +383,7 @@ public class AlbumController {
             if (photo.status() == PhotoStatus.UPLOADING && !photo.uploadExpiresAt().isAfter(now)) discardStaleUpload(album.id(), photo);
             else photos.add(photoResponse(photo, ownerPath(album.id(), photo.id()), null));
         }
-        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos);
+        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, listShares(album.id()));
     }
 
     private PhotoResponse photoResponse(Photo p, String apiPath, Instant notAfter) {
@@ -531,6 +577,8 @@ public class AlbumController {
     }
 
     public record CreateAlbum(@NotBlank String name, String description) {}
+    public record SelectedMedia(UUID albumId, UUID photoId) {}
+    public record CreateSelectedAlbum(@NotBlank String name, String description, List<SelectedMedia> items) {}
     public record UpdateAlbum(String name, String description) {}
     public enum DurationUnit { HOURS, DAYS, WEEKS, MONTHS, YEARS }
     public record CreateShare(@jakarta.validation.constraints.Min(1) int amount, @jakarta.validation.constraints.NotNull DurationUnit unit) {}
@@ -544,7 +592,11 @@ public class AlbumController {
     public record ReplacementUploadIntent(UUID uploadId, int version, String uploadUrl, String method,
                                           Map<String, String> headers, Instant expiresAt) {}
     /** An album as the API returns it. */
-    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos) {}
+    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares) {
+        public AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos) {
+            this(id, name, description, createdAt, photos, null);
+        }
+    }
     /** A photo as the API returns it: no storage keys, but URLs to load it ({@code urls} is null while UPLOADING). */
     public record PhotoResponse(UUID id, String filename, String contentType, long size, Instant uploadedAt, Instant editedAt,
                                 PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls) {}

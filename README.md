@@ -27,6 +27,7 @@ Frontend source, npm manifests, and Vite config live under the root `frontend/` 
 - `GET /api/albums/{albumId}` — album details
 - `PATCH /api/albums/{albumId}` — rename an album or change its description (`{"name":"Lisbon"}`)
 - `DELETE /api/albums/{albumId}` — delete an album, its stored media, and its share links
+- `POST /api/albums/from-selection` — create a private album with independent copies of 1–100 ready photos or videos; body: `{"name":"Favorites","description":"","items":[{"albumId":"…","photoId":"…"}]}`. A failed copy removes the new album and its media.
 - `POST /api/albums/{albumId}/uploads` — start an upload (`{"filename":"beach.jpg","contentType":"image/jpeg","size":2483112}`, 100 MB maximum); returns a URL to `PUT` the raw file to (S3 presigned, or an API route in memory mode)
 - `POST /api/albums/{albumId}/uploads/{photoId}/complete` — confirm the file arrived; the photo moves to `PROCESSING`, then `READY` once thumbnails exist
 - `POST /api/albums/{albumId}/photos` — deprecated multipart upload; too large for Lambda's 6 MB request limit
@@ -35,9 +36,20 @@ Frontend source, npm manifests, and Vite config live under the root `frontend/` 
 - `PUT /api/albums/{albumId}/photos/{photoId}` — save an edited image as a new version, keeping the earlier originals
 - `DELETE /api/albums/{albumId}/photos/{photoId}` — delete media, including unfinished uploads
 - `POST /api/albums/{albumId}/shares` — create a view-only token link with an expiry (`{"amount":2,"unit":"WEEKS"}`; units: `HOURS`, `DAYS`, `WEEKS`, `MONTHS`, `YEARS`)
+- `GET /api/albums/{albumId}/shares` — active links, soonest expiry first; owner album responses also include these in `shares`. Public album responses do not expose the owner's share tokens.
+- `DELETE /api/albums/{albumId}/shares/{token}` — revoke a link before expiry. New visits fail immediately. Newly issued shared media URLs expire within five minutes, capped by the link expiry; downloaded or already displayed content cannot be recalled. URLs issued before this change keep their original lifetime.
+- `GET /api/shared/{token}/status` — validate a link without issuing media URLs; the shared frontend checks every 30 seconds and refreshes media URLs every four minutes while visible.
 - `GET /api/shared/{token}` and `GET /api/shared/{token}/photos/{photoId}` — read an album through a valid share link
 
+## Background removal and collages
+
+Open a photo's editor and choose **Background → Remove background**. Portrait matting uses [Xenova/MODNet](https://huggingface.co/Xenova/modnet) (Apache 2.0) through Transformers.js in a Web Worker. Photos stay on the device during inference; first use downloads model weights from Hugging Face and the WebAssembly runtime from jsDelivr. This model works best with people and is not a general object segmentation model. Removal can be canceled, restored, undone and redone. Choose transparency (automatically saves PNG) or a solid background color, then save as a copy or replace the photo. The preview uses a checkerboard for transparency.
+
+For collages, use **Select photos & videos** on Photos or an album page, select **2–9 ready photos**, and choose **Create collage**. Choose Grid, Featured photo, Side by side or Stacked; adjust shape, spacing, background color, photo fit and order. Save the collage as a new JPEG to the chosen album, at up to 2400 pixels on its longest side. Source photos are retained. Videos can be included in album selections, but cannot be included in collages.
+
 ## S3 media storage
+
+In the frontend, use **Select photos & videos** on Photos or an album page, choose items, and select **Create album**. New albums stay private until a share link is created. Album cards and pages show Private or Shared, the active link count, and a way to manage expiry and revoke links. The photo editor includes captions with color, size and position controls, blur, and Portrait, Landscape and Golden hour presets alongside its existing adjustments and crop tools.
 
 S3 access goes through [Spring Cloud AWS](https://docs.awspring.io/spring-cloud-aws/docs/4.0.0/reference/html/index.html), which auto-configures the AWS SDK v2 clients. Browsers upload straight to S3 with presigned `PUT` URLs locked to the file's size and type, and read media through signed URLs: CloudFront when `PHOTO_ALBUM_CDN_DOMAIN`, `PHOTO_ALBUM_CDN_KEY_PAIR_ID` and `PHOTO_ALBUM_CDN_PRIVATE_KEY` are set, otherwise S3 presigned `GET`. The bucket needs a CORS rule allowing `PUT`, `GET` and `HEAD` from the site's origin. Credentials come from the SDK default provider chain, so prefer an attached IAM role in AWS and a named AWS profile for local work.
 

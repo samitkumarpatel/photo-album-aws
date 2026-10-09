@@ -2,45 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Aperture, Check, CircleDot, CloudFog, Contrast, Copy, Crop, Droplet, Droplets, Eye, FlipHorizontal2, FlipVertical2,
   Moon, Pipette, Redo2, RotateCcw, Save, SlidersHorizontal, Sparkles, Sun, Sunrise, Thermometer, Triangle,
-  Undo2, WandSparkles, X, Blend, Focus, Waves, Film,
+  Undo2, WandSparkles, X, Blend, Focus, Waves, Film, Type, Scissors,
 } from 'lucide-react'
 import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy } from './imageOps.js'
 import CameraSpinner from '../CameraSpinner.jsx'
 import { api, apiFetch, errorMessage } from '../api.js'
-import { isCrossOrigin } from '../media.js'
+import { loadEditableImage } from './loadImage.js'
 import { putFile, uploadToAlbum } from '../upload/uploads.js'
 import './editor.css'
 
 const ICONS = {
   exposure: Aperture, brightness: Sun, contrast: Contrast, highlights: Sunrise, shadows: Moon, saturation: Droplet,
   vibrance: Droplets, warmth: Thermometer, tint: Pipette, fade: CloudFog, sharpen: Triangle, vignette: CircleDot,
-  clarity: Focus, denoise: Waves, grain: Film,
+  clarity: Focus, denoise: Waves, grain: Film, blur: CloudFog,
 }
-const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop]]
+const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop], ['text', 'Text', Type], ['background', 'Background', Scissors]]
 const PREVIEW_SIDE = 1600
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
-
-/*
- * Loads the original so drawing it doesn't taint the canvas. Cross-origin URLs (CloudFront / S3) are fetched with CORS
- * and no cache, because an earlier non-CORS <img> load of the same URL may sit in the HTTP cache without
- * Access-Control-Allow-Origin. Same-origin URLs use crossOrigin="anonymous" in case they redirect to the CDN.
- */
-async function loadEditableImage(src, signal) {
-  const image = new Image()
-  image.decoding = 'async'
-  let objectUrl = null
-  if (isCrossOrigin(src)) {
-    const response = await fetch(src, { mode: 'cors', cache: 'no-store', credentials: 'omit', signal })
-    if (!response.ok) throw new Error('Could not load photo')
-    objectUrl = URL.createObjectURL(await response.blob())
-    image.src = objectUrl
-  } else {
-    image.crossOrigin = 'anonymous'
-    image.src = src
-  }
-  try { await image.decode() } finally { if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  return image
-}
 
 /* ---------- crop math (all values are fractions of the frame) ---------- */
 
@@ -117,6 +95,12 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const [saveMenu, setSaveMenu] = useState(false)
   const [saving, setSaving] = useState(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const backgroundWorker = useRef(null)
+  const [backgroundMask, setBackgroundMask] = useState(null)
+  const [backgroundBusy, setBackgroundBusy] = useState(false)
+  const [backgroundProgress, setBackgroundProgress] = useState('')
+
+  useEffect(() => () => { backgroundWorker.current?.terminate(); backgroundWorker.current = null }, [])
 
   const params = useMemo(() => combineParams(edit, autoParams), [edit, autoParams])
   const dirty = !sameEdit(edit, DEFAULT_EDIT)
@@ -168,14 +152,14 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     const frame = requestAnimationFrame(() => {
       const p = preview.current
       if (comparing) render(canvas.current, p, p.width, p.height, DEFAULT_EDIT, null, 'final')
-      else render(canvas.current, p, p.width, p.height, edit, params, cropping ? 'full' : 'final')
+      else render(canvas.current, p, p.width, p.height, edit, params, cropping ? 'full' : 'final', backgroundMask)
       const cw = canvas.current.width, ch = canvas.current.height
       const scale = Math.min(stageSize.w / cw, stageSize.h / ch, 1.5)
       const next = { w: Math.floor(cw * scale), h: Math.floor(ch * scale) }
       setDisplay(prev => prev.w === next.w && prev.h === next.h ? prev : next)
     })
     return () => cancelAnimationFrame(frame)
-  }, [status, edit, params, cropping, comparing, stageSize])
+  }, [status, edit, params, cropping, comparing, stageSize, backgroundMask])
 
   /* history: commit a snapshot shortly after changes settle */
   useEffect(() => {
@@ -193,7 +177,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       const pending = !sameEdit(h.stack[h.index], edit)
       const index = pending ? h.index : Math.max(0, h.index - 1)
       setEdit(h.stack[index])
-      return { ...h, index }
+      return { stack: pending ? [...h.stack.slice(0, h.index + 1), edit] : h.stack, index }
     })
   }, [edit])
   const redo = useCallback(() => {
@@ -203,6 +187,48 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   /* helpers that change the edit */
   const update = patch => setEdit(e => ({ ...e, ...(typeof patch === 'function' ? patch(e) : patch) }))
   const setAdjust = (key, value) => update(e => ({ adjust: { ...e.adjust, [key]: value } }))
+  const setText = patch => update(e => ({ text: { ...e.text, ...patch } }))
+  const setBackground = patch => update(e => ({ background: { ...e.background, ...patch } }))
+  function cancelBackground() {
+    backgroundWorker.current?.terminate()
+    backgroundWorker.current = null
+    setBackgroundBusy(false)
+    setBackgroundProgress('')
+  }
+  function removeBackground() {
+    if (status !== 'ready' || backgroundBusy || saving) return
+    if (backgroundMask) { setBackground({ on: true }); return }
+    setSaveMenu(false); setError(''); setBackgroundBusy(true); setBackgroundProgress('Preparing photo…')
+    try {
+      const sample = scaledCopy(full.current, 1024)
+      const pixels = sample.getContext('2d').getImageData(0, 0, sample.width, sample.height).data
+      const worker = new Worker(new URL('./background.worker.js', import.meta.url), { type: 'module' })
+      backgroundWorker.current = worker
+      worker.onmessage = ({ data }) => {
+        if (backgroundWorker.current !== worker) return
+        if (data.status === 'done') {
+          const mask = document.createElement('canvas')
+          mask.width = data.width; mask.height = data.height
+          mask.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(data.pixels), data.width, data.height), 0, 0)
+          setBackgroundMask(mask)
+          setBackground({ on: true })
+          cancelBackground()
+        } else if (data.status === 'error') {
+          setError(data.message)
+          cancelBackground()
+        } else setBackgroundProgress(data.message)
+      }
+      worker.onerror = () => {
+        if (backgroundWorker.current !== worker) return
+        setError('The background tool couldn’t start. Check your connection and try again with a recent browser.')
+        cancelBackground()
+      }
+      worker.postMessage({ pixels: pixels.buffer, width: sample.width, height: sample.height }, [pixels.buffer])
+    } catch {
+      setError('The background tool couldn’t start. Try again with a recent browser.')
+      cancelBackground()
+    }
+  }
   const frame = preview.current ? orientedSize(preview.current.width, preview.current.height, edit.quarter) : { w: 1, h: 1 }
   const ratioFor = (aspectId, f = frame) => {
     const aspect = ASPECTS.find(a => a.id === aspectId)
@@ -211,6 +237,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   }
   const chooseAspect = id => update({ aspect: id, crop: fitAspect(ratioFor(id)) })
   const rotateLeft = () => update(e => {
+    if (!preview.current) return {}
     const quarter = (e.quarter + (e.flipX !== e.flipY ? 1 : 3)) % 4
     const f = orientedSize(preview.current.width, preview.current.height, quarter)
     return { quarter, crop: fitAspect(ratioFor(e.aspect, f)) }
@@ -235,12 +262,13 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const endDrag = () => { drag.current = null }
 
   /* closing & saving */
-  const requestClose = () => { if (saving) return; if (dirty) setConfirmDiscard(true); else onClose() }
+  const requestClose = () => { if (saving) return; cancelBackground(); if (dirty) setConfirmDiscard(true); else onClose() }
   async function save(mode) {
+    if (backgroundBusy || saving || status !== 'ready') return
     setSaveMenu(false); setSaving(mode); setError('')
     try {
-      const { type, name, copyName } = outputFormat(item.contentType, item.filename)
-      const blob = await exportBlob(full.current, edit, params, type)
+      const { type, name, copyName } = outputFormat(item.contentType, item.filename, edit.background.on && edit.background.fill === 'transparent')
+      const blob = await exportBlob(full.current, edit, params, type, backgroundMask)
       const file = new File([blob], mode === 'copy' ? copyName : name, { type })
       // A copy is a normal upload. In AWS, replacement images also use S3 presigned uploads because Lambda/API
       // Gateway cannot reliably receive multipart bodies. Local development keeps the direct multipart endpoint.
@@ -290,7 +318,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
           onContextMenu={e => e.preventDefault()}><Eye size={20} /></button>
       </div>
       <div className="ed-save">
-        <button className="ed-primary" onClick={() => setSaveMenu(v => !v)} disabled={!dirty || !!saving || status !== 'ready'} aria-haspopup="menu" aria-expanded={saveMenu}>
+        <button className="ed-primary" onClick={() => setSaveMenu(v => !v)} disabled={!dirty || !!saving || backgroundBusy || status !== 'ready'} aria-haspopup="menu" aria-expanded={saveMenu}>
           {saving ? <CameraSpinner size={19} inherit decorative /> : <Check size={17} />}{saving ? 'Saving…' : 'Save'}
         </button>
         {saveMenu && <div className="ed-menu" role="menu">
@@ -303,7 +331,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     <div className="ed-stage" ref={stage} onPointerDown={() => saveMenu && setSaveMenu(false)}>
       {status === 'loading' && <div className="ed-status" role="status"><CameraSpinner size={64} inherit decorative /><span>Opening photo…</span></div>}
       {status === 'error' && <div className="ed-status"><span>{error}</span><button className="ed-primary" onClick={onClose}>Close</button></div>}
-      <div className="ed-canvas-wrap" style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
+      <div className={'ed-canvas-wrap' + (edit.background.on && !comparing && edit.background.fill === 'transparent' ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
         <canvas ref={canvas} aria-label={comparing ? 'Original photo' : 'Edited photo preview'} role="img" />
         {comparing && <span className="ed-badge">Original</span>}
         {cropping && !comparing && <div className="ed-crop-layer" onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
@@ -319,6 +347,27 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
     <section className="ed-panel" aria-label="Editing tools">
       <div className="ed-tool">
+        {tab === 'background' && <div className="ed-background-tools">
+          <p className="ed-hint">Remove the background around a person. Works best with clear portraits. Processing happens on your device; the first use downloads the tool.</p>
+          {backgroundBusy ? <div className="ed-background-progress"><span role="status"><CameraSpinner size={20} inherit decorative />{backgroundProgress}</span><button className="ed-secondary" onClick={cancelBackground}>Cancel removal</button></div>
+            : <div className="ed-background-actions"><button className="ed-primary" onClick={removeBackground} disabled={status !== 'ready' || !!saving || edit.background.on}><Scissors size={18} />{edit.background.on ? 'Background removed' : 'Remove background'}</button>
+              {edit.background.on && <button className="ed-secondary" onClick={() => setBackground({ on: false })} disabled={!!saving}>Restore background</button>}</div>}
+          {edit.background.on && <>
+            <div className="ed-background-actions" role="group" aria-label="Background fill">
+              <button className={'ed-ratio' + (edit.background.fill === 'transparent' ? ' selected' : '')} aria-pressed={edit.background.fill === 'transparent'} onClick={() => setBackground({ fill: 'transparent' })} disabled={!!saving}>Transparent</button>
+              <button className={'ed-ratio' + (edit.background.fill === 'color' ? ' selected' : '')} aria-pressed={edit.background.fill === 'color'} onClick={() => setBackground({ fill: 'color' })} disabled={!!saving}>Solid color</button>
+              {edit.background.fill === 'color' && <label>Color <input type="color" aria-label="Background color" value={edit.background.color} onChange={e => setBackground({ color: e.target.value })} disabled={!!saving} /></label>}
+            </div>
+            <p className="ed-hint">{edit.background.fill === 'transparent' ? 'The checkerboard shows transparency. Saved as PNG to keep the background transparent.' : 'Your selected color will be included in the saved photo.'}</p>
+          </>}
+        </div>}
+        {tab === 'text' && <div className="ed-text-tools">
+          <label>Caption<textarea aria-label="Photo caption" rows={2} maxLength={240} value={edit.text.value} onChange={e => setText({ value: e.target.value })} placeholder="Add a caption to your photo" /></label>
+          <div className="ed-caption-options"><label>Color <input type="color" aria-label="Caption color" value={edit.text.color} onChange={e => setText({ color: e.target.value })} /></label><button className="ed-text-button" disabled={!edit.text.value} onClick={() => update({ text: DEFAULT_EDIT.text })}>Remove caption</button></div>
+          <Slider label="Text size" value={edit.text.size} min={2} max={20} format={v => v + '%'} onChange={size => setText({ size })} />
+          <Slider label="Horizontal position" value={edit.text.x} min={0} max={100} format={v => v + '%'} onChange={x => setText({ x })} />
+          <Slider label="Vertical position" value={edit.text.y} min={0} max={100} format={v => v + '%'} onChange={y => setText({ y })} />
+        </div>}
         {tab === 'auto' && <div className="ed-auto">
           <button className={'ed-auto-toggle' + (edit.auto.on ? ' on' : '')} aria-pressed={edit.auto.on} onClick={() => update(e => ({ auto: { ...e.auto, on: !e.auto.on } }))} disabled={!autoParams}>
             <Sparkles size={20} /><span><strong>Auto-enhance</strong><small>{edit.auto.on ? 'Balanced light, contrast and colour' : 'One tap to fix light and colour'}</small></span>
@@ -366,7 +415,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
       <nav className="ed-tabs" aria-label="Tool">
         {TABS.map(([key, label, Icon]) => {
-          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : geometryChanged
+          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : geometryChanged
           return <button key={key} aria-pressed={tab === key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>
             <span className="ed-tab-icon"><Icon size={21} />{marked && <i className="ed-dot" />}</span><span>{label}</span>
           </button>

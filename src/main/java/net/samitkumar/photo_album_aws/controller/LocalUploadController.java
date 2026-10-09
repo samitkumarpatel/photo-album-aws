@@ -37,19 +37,28 @@ public class LocalUploadController {
 
     @PutMapping("/api/uploads/{albumId}/{photoId}")
     public void upload(@PathVariable UUID albumId, @PathVariable UUID photoId, @RequestParam long expires,
-                       @RequestParam String signature, HttpServletRequest request) throws IOException {
+                       @RequestParam String signature, @RequestParam(required = false) String objectKey,
+                       @RequestParam(required = false) String contentType, @RequestParam(required = false) Long size,
+                       HttpServletRequest request) throws IOException {
         var photo = repository.findById(albumId).flatMap(a -> a.photos().stream().filter(p -> p.id().equals(photoId)).findFirst())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid or expired upload URL"));
-        if (!signer.verify(albumId, photoId, photo.objectKey(), photo.contentType(), photo.size(), expires, signature))
+        boolean replacement = objectKey != null;
+        String key = replacement ? objectKey : photo.objectKey();
+        String type = replacement ? contentType : photo.contentType();
+        long length = replacement && size != null ? size : photo.size();
+        if (replacement && (!key.matches("replacement-uploads/" + albumId + "/" + photoId + "/[a-f0-9-]{36}\\.[a-z0-9]+")
+                || type == null || !type.startsWith("image/") || length <= 0 || length > 100L * 1024 * 1024 || photo.status() == PhotoStatus.UPLOADING))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid replacement upload URL");
+        if (!signer.verify(albumId, photoId, key, type, length, expires, signature))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Invalid or expired upload URL");
-        if (photo.status() != PhotoStatus.UPLOADING) throw new ResponseStatusException(HttpStatus.CONFLICT, "This upload is already complete");
-        if (!photo.contentType().equals(request.getContentType()))
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Content-Type must be " + photo.contentType());
-        if (request.getContentLengthLong() != photo.size())
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Content-Length must be " + photo.size());
+        if (!replacement && photo.status() != PhotoStatus.UPLOADING) throw new ResponseStatusException(HttpStatus.CONFLICT, "This upload is already complete");
+        if (!type.equals(request.getContentType()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Content-Type must be " + type);
+        if (request.getContentLengthLong() != length)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Content-Length must be " + length);
         // At most 100 MB (the intent enforces it), so buffering in memory is fine for this local stand-in.
-        byte[] body = request.getInputStream().readNBytes(Math.toIntExact(photo.size() + 1));
-        if (body.length != photo.size()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Body length must be " + photo.size());
-        mediaStorage.putObject(photo.objectKey(), photo.contentType(), body.length, new ByteArrayInputStream(body));
+        byte[] body = request.getInputStream().readNBytes(Math.toIntExact(length + 1));
+        if (body.length != length) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Body length must be " + length);
+        mediaStorage.putObject(key, type, body.length, new ByteArrayInputStream(body));
     }
 }

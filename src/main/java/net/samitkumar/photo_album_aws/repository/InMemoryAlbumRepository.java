@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 public class InMemoryAlbumRepository implements AlbumRepository {
     private final Map<UUID, Album> albums = new ConcurrentHashMap<>();
     private final Map<String, Share> shares = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, String>> metadata = new ConcurrentHashMap<>();
 
     @Override
     public List<Album> findAll() {
@@ -45,6 +46,7 @@ public class InMemoryAlbumRepository implements AlbumRepository {
 
     @Override
     public Optional<Album> delete(UUID albumId) {
+        metadata.remove(albumId);
         shares.values().removeIf(share -> share.albumId().equals(albumId));
         return Optional.ofNullable(albums.remove(albumId));
     }
@@ -118,5 +120,24 @@ public class InMemoryAlbumRepository implements AlbumRepository {
     private static Album withPhotos(Album a, List<Photo> photos) {
         var sorted = photos.stream().sorted(Comparator.comparing(Photo::uploadedAt).thenComparing(p -> p.id().toString())).toList();
         return new Album(a.id(), a.name(), a.description(), a.createdAt(), sorted);
+    }
+
+    @Override public void putMetadata(UUID albumId, String key, String json) {
+        albums.computeIfPresent(albumId, (id, album) -> {
+            metadata.computeIfAbsent(id, ignored -> new ConcurrentHashMap<>()).put(key, json);
+            return album;
+        });
+    }
+    @Override public Optional<String> getMetadata(UUID albumId, String key) {
+        return Optional.ofNullable(metadata.getOrDefault(albumId, Map.of()).get(key));
+    }
+    @Override public Map<String, String> listMetadata(UUID albumId, String prefix) {
+        var result = new TreeMap<String, String>();
+        metadata.getOrDefault(albumId, Map.of()).forEach((key, value) -> { if (key.startsWith(prefix)) result.put(key, value); });
+        return result;
+    }
+    @Override public void deleteMetadata(UUID albumId, String prefix) {
+        var items = metadata.get(albumId);
+        if (items != null) items.keySet().removeIf(key -> key.startsWith(prefix));
     }
 }

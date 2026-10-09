@@ -46,6 +46,7 @@ public class AlbumController {
     private final UploadUrlSigner uploadUrlSigner;
     private final MediaUrlSigner mediaUrlSigner;
     private final ProcessingTrigger processingTrigger;
+    private final PhotoHistory history;
 
     public AlbumController(AlbumRepository repository, MediaStorage mediaStorage, UploadUrlSigner uploadUrlSigner,
                            MediaUrlSigner mediaUrlSigner, ProcessingTrigger processingTrigger) {
@@ -54,6 +55,7 @@ public class AlbumController {
         this.uploadUrlSigner = uploadUrlSigner;
         this.mediaUrlSigner = mediaUrlSigner;
         this.processingTrigger = processingTrigger;
+        this.history = new PhotoHistory(repository, mediaStorage);
     }
 
     @GetMapping
@@ -127,6 +129,8 @@ public class AlbumController {
         for (Photo photo : album.photos()) deleteKeysQuietly(albumId, photo);
         deletePrefixQuietly(albumId, "originals/" + albumId + "/");
         deletePrefixQuietly(albumId, "derived/" + albumId + "/");
+        deletePrefixQuietly(albumId, "recipes/" + albumId + "/");
+        deletePrefixQuietly(albumId, "replacement-uploads/" + albumId + "/");
     }
 
     /**
@@ -164,6 +168,8 @@ public class AlbumController {
         if (!current.contentType().startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only photos can be edited");
         if (current.status() == PhotoStatus.UPLOADING) throw photoNotFound();
 
+        validateRecipe(albumId, current, request.editRecipe());
+        history.archive(albumId, current);
         String safeFilename = filename(request.filename(), current.filename());
         UUID uploadId = UUID.randomUUID();
         int version = nextVersion(current.objectKey());
@@ -187,6 +193,8 @@ public class AlbumController {
         if (current.status() == PhotoStatus.UPLOADING) throw photoNotFound();
         if (nextVersion(current.objectKey()) != version) throw new ResponseStatusException(HttpStatus.CONFLICT, "The photo changed while it was being edited");
 
+        validateRecipe(albumId, current, request.editRecipe());
+        history.archive(albumId, current);
         String safeFilename = filename(request.filename(), current.filename());
         String extension = extension(safeFilename, contentType);
         String stagedKey = mediaStorage.objectKey("replacement-uploads/" + albumId + "/" + photoId + "/" + uploadId + "." + extension);
@@ -202,12 +210,19 @@ public class AlbumController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "The photo changed while it was being edited");
 
         try {
+            if (request.editRecipe() != null) {
+                try { history.saveRecipe(albumId, photoId, version, request.editRecipe()); }
+                catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+            }
             mediaStorage.copyObject(stagedKey, relativeKey, contentType);
         } catch (RuntimeException e) {
             repository.replacePhotoIfCurrent(albumId, current, nextObjectKey);
+            deleteMediaQuietly(nextObjectKey, albumId);
+            try { history.deleteRecipe(albumId, photoId, version); } catch (RuntimeException cleanup) { e.addSuppressed(cleanup); }
             throw e;
         }
         deleteMediaQuietly(stagedKey, albumId);
+        processingTrigger.uploaded(albumId, photoId);
         return photoResponse(updated, ownerPath(albumId, photoId), null);
     }
 
@@ -284,6 +299,7 @@ public class AlbumController {
         Photo current = requirePhoto(requireAlbum(albumId), photoId);
         if (!current.contentType().startsWith("image/")) throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Only photos can be edited");
         if (current.status() == PhotoStatus.UPLOADING) throw photoNotFound();
+        history.archive(albumId, current);
         String filename = filename(file.getOriginalFilename(), current.filename());
         String relativeKey = originalKey(albumId, photoId, nextVersion(current.objectKey()), extension(filename, contentType));
         String objectKey;
@@ -306,6 +322,7 @@ public class AlbumController {
         requireAlbum(albumId);
         Photo photo = repository.deletePhoto(albumId, photoId).orElseThrow(AlbumController::photoNotFound);
         deletePhotoMedia(albumId, photo);
+        history.delete(albumId, photoId);
     }
 
     @PostMapping("/{albumId}/shares")
@@ -323,12 +340,13 @@ public class AlbumController {
         Instant expiresAt = ZonedDateTime.now(ZoneOffset.UTC).plus(request.amount(), unit).toInstant();
         byte[] tokenBytes = new byte[32]; secureRandom.nextBytes(tokenBytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(tokenBytes);
+        ShareDetails details = shareDetails(request.label(), request.recipient());
+        repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
         repository.saveShare(token, new Share(albumId, expiresAt));
-        return new ShareResponse(token, expiresAt);
+        return new ShareResponse(token, expiresAt, details.label(), details.recipient());
     }
 
-    /** Active share links for this album, soonest-expiring first. There is no recipient to name: a share is a bearer
-     *  link, not tied to any viewer identity, so this lists the links themselves, not who has used them. */
+    /** Active links, soonest expiry first. Recipient emails label invitations; links remain bearer links. */
     @GetMapping("/{albumId}/shares")
     public List<ShareResponse> listShares(@PathVariable UUID albumId) {
         requireAlbum(albumId);
@@ -336,7 +354,7 @@ public class AlbumController {
         return repository.listShares(albumId).stream()
                 .filter(s -> s.expiresAt().isAfter(now))
                 .sorted(Comparator.comparing(ShareSummary::expiresAt))
-                .map(s -> new ShareResponse(s.token(), s.expiresAt()))
+                .map(s -> shareResponse(albumId, s.token(), s.expiresAt()))
                 .toList();
     }
 
@@ -346,6 +364,30 @@ public class AlbumController {
         requireAlbum(albumId);
         repository.findShare(token).filter(s -> s.albumId().equals(albumId)).orElseThrow(AlbumController::shareNotFound);
         repository.deleteShare(token);
+        repository.deleteMetadata(albumId, "SHARE#" + token);
+    }
+
+    private static ShareDetails shareDetails(String label, String recipient) {
+        String name = label == null ? "" : label.trim(), email = recipient == null ? "" : recipient.trim();
+        if (name.length() > 90 || email.length() > 254 || (!email.isEmpty() && !email.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Use a label up to 90 characters and a valid recipient email");
+        return new ShareDetails(name, email);
+    }
+    private ShareResponse shareResponse(UUID albumId, String token, Instant expiry) {
+        ShareDetails details = repository.getMetadata(albumId, "SHARE#" + token).map(json -> PhotoHistory.JSON.readValue(json, ShareDetails.class)).orElse(new ShareDetails("", ""));
+        return new ShareResponse(token, expiry, details.label(), details.recipient());
+    }
+    @PatchMapping("/{albumId}/shares/{token}")
+    public ShareResponse updateShare(@PathVariable UUID albumId, @PathVariable String token, @Valid @RequestBody UpdateShare request) {
+        requireAlbum(albumId);
+        Share current = repository.findShare(token).filter(v -> v.albumId().equals(albumId)).orElseThrow(AlbumController::shareNotFound);
+        if (!current.expiresAt().isAfter(Instant.now())) throw new ResponseStatusException(HttpStatus.GONE, "This link expired. Create a new link.");
+        if (request.expiresAt() == null || !request.expiresAt().isAfter(Instant.now()) || request.expiresAt().isAfter(Instant.now().plus(Duration.ofDays(3650))))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose a future expiry within 10 years");
+        ShareDetails details = shareDetails(request.label(), request.recipient());
+        repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
+        repository.saveShare(token, new Share(albumId, request.expiresAt()));
+        return shareResponse(albumId, token, request.expiresAt());
     }
 
     /** A shared album shows only photos that finished uploading and passed processing; URLs expire with the link. */
@@ -354,7 +396,7 @@ public class AlbumController {
         Album album = shared.album();
         var photos = album.photos().stream().filter(AlbumController::sharedVisible)
                 .map(p -> photoResponse(p, sharedPath(token, p.id()), sharedMediaExpiry(shared.expiresAt()))).toList();
-        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos);
+        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, null, CreativeController.presentation(repository, album.id()));
     }
 
     public Instant sharedStatus(String token) { return requireSharedAlbum(token).expiresAt(); }
@@ -373,6 +415,14 @@ public class AlbumController {
         return mediaResponse(photo, mediaSize, download, sharedPath(token, photoId), sharedMediaExpiry(shared.expiresAt()));
     }
 
+    private void validateRecipe(UUID albumId, Photo current, Map<String, Object> recipe) {
+        if (recipe == null) return;
+        if (!(recipe.get("baseVersion") instanceof Number n) || !history.versions(albumId, current).containsKey(n.intValue()))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The edit source is unavailable");
+        if (PhotoHistory.JSON.writeValueAsBytes(recipe).length > 2_000_000)
+            throw new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "The edit recipe is too large");
+    }
+
     /* ---------- responses ---------- */
 
     /** Owner view: hides uploads whose intent expired and removes them, so abandoned uploads never pile up. */
@@ -383,7 +433,7 @@ public class AlbumController {
             if (photo.status() == PhotoStatus.UPLOADING && !photo.uploadExpiresAt().isAfter(now)) discardStaleUpload(album.id(), photo);
             else photos.add(photoResponse(photo, ownerPath(album.id(), photo.id()), null));
         }
-        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, listShares(album.id()));
+        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, listShares(album.id()), CreativeController.presentation(repository, album.id()));
     }
 
     private PhotoResponse photoResponse(Photo p, String apiPath, Instant notAfter) {
@@ -394,7 +444,7 @@ public class AlbumController {
                 mediaUrl(p, MediaSize.ORIGINAL, apiPath, notAfter),
                 mediaUrlSigner.downloadUrl(p, apiPath, notAfter));
         return new PhotoResponse(p.id(), p.filename(), p.contentType(), p.size(), p.uploadedAt(), p.editedAt(), p.status(),
-                p.width(), p.height(), p.takenAt(), urls);
+                p.width(), p.height(), p.takenAt(), urls, PhotoHistory.version(p));
     }
 
     private String mediaUrl(Photo photo, MediaSize size, String apiPath, Instant notAfter) {
@@ -491,7 +541,7 @@ public class AlbumController {
      * Relative key of an original: {@code originals/{albumId}/{photoId}/v{n}.{ext}}. The processing worker parses album
      * and photo id from this layout, so keep it stable.
      */
-    static String originalKey(UUID albumId, UUID photoId, int version, String extension) {
+    public static String originalKey(UUID albumId, UUID photoId, int version, String extension) {
         return "originals/" + albumId + "/" + photoId + "/v" + version + "." + extension;
     }
 
@@ -522,6 +572,7 @@ public class AlbumController {
         deleteKeysQuietly(albumId, photo);
         deletePrefixQuietly(albumId, "originals/" + albumId + "/" + photo.id() + "/");
         deletePrefixQuietly(albumId, "derived/" + albumId + "/" + photo.id() + "/");
+        deletePrefixQuietly(albumId, "replacement-uploads/" + albumId + "/" + photo.id() + "/");
     }
 
     /** Keys the record knows about; covers objects stored outside the current layout. */
@@ -581,25 +632,36 @@ public class AlbumController {
     public record CreateSelectedAlbum(@NotBlank String name, String description, List<SelectedMedia> items) {}
     public record UpdateAlbum(String name, String description) {}
     public enum DurationUnit { HOURS, DAYS, WEEKS, MONTHS, YEARS }
-    public record CreateShare(@jakarta.validation.constraints.Min(1) int amount, @jakarta.validation.constraints.NotNull DurationUnit unit) {}
+    public record CreateShare(@jakarta.validation.constraints.Min(1) int amount, @jakarta.validation.constraints.NotNull DurationUnit unit, String label, String recipient) {
+        public CreateShare(int amount, DurationUnit unit) { this(amount, unit, "", ""); }
+    }
+    public record ShareDetails(String label, String recipient) {}
+    public record UpdateShare(Instant expiresAt, String label, String recipient) {}
     public record Share(UUID albumId, Instant expiresAt) {}
-    public record ShareResponse(String token, Instant expiresAt) {}
+    public record ShareResponse(String token, Instant expiresAt, String label, String recipient) {
+        public ShareResponse(String token, Instant expiresAt) { this(token, expiresAt, "", ""); }
+    }
     /** A share link as the repository lists it; unlike {@link Share} it carries its own token. */
     public record ShareSummary(String token, UUID albumId, Instant expiresAt) {}
-    public record CreateUpload(String filename, String contentType, Long size) {}
+    public record CreateUpload(String filename, String contentType, Long size, Map<String, Object> editRecipe) {
+        public CreateUpload(String filename, String contentType, Long size) { this(filename, contentType, size, null); }
+    }
     /** Where and how to PUT the file: send {@code headers} exactly; the URL stops working at {@code expiresAt}. */
     public record UploadIntent(UUID photoId, String uploadUrl, String method, Map<String, String> headers, Instant expiresAt) {}
     public record ReplacementUploadIntent(UUID uploadId, int version, String uploadUrl, String method,
                                           Map<String, String> headers, Instant expiresAt) {}
     /** An album as the API returns it. */
-    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares) {
+    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares, CreativeController.Presentation presentation) {
+        public AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares) {
+            this(id, name, description, createdAt, photos, shares, null);
+        }
         public AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos) {
-            this(id, name, description, createdAt, photos, null);
+            this(id, name, description, createdAt, photos, null, null);
         }
     }
     /** A photo as the API returns it: no storage keys, but URLs to load it ({@code urls} is null while UPLOADING). */
     public record PhotoResponse(UUID id, String filename, String contentType, long size, Instant uploadedAt, Instant editedAt,
-                                PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls) {}
+                                PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls, int version) {}
     public record Album(UUID id, String name, String description, Instant createdAt, List<Photo> photos) {
         public Album withoutObjectKey() {
             return new Album(id, name, description, createdAt, photos.stream().map(Photo::withoutObjectKey).toList());

@@ -35,7 +35,7 @@ Frontend source, npm manifests, and Vite config live under the root `frontend/` 
 - `GET /api/albums/{albumId}/photos/{photoId}?size=thumbnail|display|original` — the media itself; streamed in memory mode, a redirect to a signed URL in S3 mode
 - `PUT /api/albums/{albumId}/photos/{photoId}` — save an edited image as a new version, keeping the earlier originals
 - `DELETE /api/albums/{albumId}/photos/{photoId}` — delete media, including unfinished uploads
-- `POST /api/albums/{albumId}/shares` — create a view-only token link with an expiry (`{"amount":2,"unit":"WEEKS"}`; units: `HOURS`, `DAYS`, `WEEKS`, `MONTHS`, `YEARS`)
+- `POST /api/albums/{albumId}/shares` — create a view-only token link with an expiry (`{"amount":2,"unit":"WEEKS","label":"Family","recipient":"person@example.com"}`; units: `HOURS`, `DAYS`, `WEEKS`, `MONTHS`, `YEARS`)
 - `GET /api/albums/{albumId}/shares` — active links, soonest expiry first; owner album responses also include these in `shares`. Public album responses do not expose the owner's share tokens.
 - `DELETE /api/albums/{albumId}/shares/{token}` — revoke a link before expiry. New visits fail immediately. Newly issued shared media URLs expire within five minutes, capped by the link expiry; downloaded or already displayed content cannot be recalled. URLs issued before this change keep their original lifetime.
 - `GET /api/shared/{token}/status` — validate a link without issuing media URLs; the shared frontend checks every 30 seconds and refreshes media URLs every four minutes while visible.
@@ -43,9 +43,32 @@ Frontend source, npm manifests, and Vite config live under the root `frontend/` 
 
 ## Background removal and collages
 
-Open a photo's editor and choose **Background → Remove background**. Portrait matting uses [Xenova/MODNet](https://huggingface.co/Xenova/modnet) (Apache 2.0) through Transformers.js in a Web Worker. Photos stay on the device during inference; first use downloads model weights from Hugging Face and the WebAssembly runtime from jsDelivr. This model works best with people and is not a general object segmentation model. Removal can be canceled, restored, undone and redone. Choose transparency (automatically saves PNG) or a solid background color, then save as a copy or replace the photo. The preview uses a checkerboard for transparency.
+Open a photo's editor and choose **Background → Remove background**. Portrait matting uses [Xenova/MODNet](https://huggingface.co/Xenova/modnet) (Apache 2.0) through Transformers.js in a Web Worker. Photos stay on the device during inference; first use downloads model weights from Hugging Face and the WebAssembly runtime from jsDelivr. This model works best with people and is not a general object segmentation model. Removal can be canceled, restored, undone and redone. Choose transparency (automatically saves PNG), a solid color, background blur, or an uploaded replacement image. Restore and erase brushes refine the mask; brush strokes follow crop, rotation and flip changes. Save as a copy or replace the photo. The preview uses a checkerboard for transparency.
 
-For collages, use **Select photos & videos** on Photos or an album page, select **2–9 ready photos**, and choose **Create collage**. Choose Grid, Featured photo, Side by side or Stacked; adjust shape, spacing, background color, photo fit and order. Save the collage as a new JPEG to the chosen album, at up to 2400 pixels on its longest side. Source photos are retained. Videos can be included in album selections, but cannot be included in collages.
+For collages, use **Select photos & videos** on Photos or an album page, select **2–9 ready photos**, and choose **Create collage**. Choose Grid, Mosaic, Featured photo beside or above, Side by side or Stacked, or start from a template. Drag photos to frame them, zoom, add captions and a title, and customize spacing, borders and rounded corners. Save a new JPEG to the chosen album at 2400 or 4000 pixels on its longest side. Source photos are retained. Videos can be included in album selections, but cannot be included in collages.
+
+## Creative features
+
+- **Saved edits and history:** reopen the editor to adjust saved settings against the retained source, instead of repeatedly applying edits to exported pixels. The viewer's clock button previews versions, compares with the current image, and restores a version as a new edit. Save as copy creates an independent source and recipe. History metadata starts with edits made after this feature was added; older images start at their earliest recorded version.
+- **Batch editing:** select ready photos and choose **Batch edit photos**. Apply a preset, resize, or watermark to up to 100 photos, saving copies or replacing with history retained. Processing is sequential, shows per-photo results, supports stopping after the current photo and retrying unfinished photos. Videos are excluded.
+- **Album presentation:** open **Album options → Album presentation** for a cover photo, classic/dark/warm/minimal theme, brand name, logo, slideshow timing and presentation watermark. Owner and shared galleries use the same presentation. Slideshow supports photos and videos, pause, previous and next. Presentation watermarks are visual overlays; use photo/batch watermarks to stamp exported images.
+- **Sharing management:** the **Sharing** page lists albums with active links. Links have optional labels and recipient emails, editable expiry, copy/open/invite actions and revocation. Email invitation opens a draft in the user's email app; the application does not send email or restrict a link to the named recipient.
+
+Creative metadata uses `EXTRA#` records within existing DynamoDB album partitions. Versioned originals remain in object storage; larger recipes, background assets and masks are stored under `recipes/{albumId}/{photoId}/vN.json` (2 MB per recipe). Photo/album deletion also cleans associated recipes and version records. In memory mode all data is lost on restart. No new AWS resources are required.
+
+Security additions (account sign-in, ownership and password-protected links) and subscription enforcement remain deferred until after the photo and album work, as requested for development.
+
+### Creative API
+
+- `GET /api/albums/{albumId}/photos/{photoId}/edit` — retained source URL, source version and current recipe.
+- `GET /api/albums/{albumId}/photos/{photoId}/versions` — current and archived version previews.
+- `GET /api/albums/{albumId}/photos/{photoId}/versions/{version}/media` — original pixels for a version.
+- `POST /api/albums/{albumId}/photos/{photoId}/versions/{version}/restore` — restore as a new version.
+- `POST /api/albums/{albumId}/photos/{photoId}/copy-source` — create an independent editable source (`{"version":1}`).
+- `POST /api/albums/{albumId}/photos/{photoId}/replacement` — start a staged presigned replacement with filename/contentType/size and optional `editRecipe` including `baseVersion`.
+- `POST /api/albums/{albumId}/photos/{photoId}/replacement/{uploadId}/{version}/complete` — promote uploaded pixels and persist the recipe; same request body as the intent.
+- `GET` / `PUT /api/albums/{albumId}/presentation` — gallery theme, cover photo, logo, brand name, watermark and slideshow timing.
+- `PATCH /api/albums/{albumId}/shares/{token}` — set a future `expiresAt`, label and recipient. Expired or revoked links require a new link.
 
 ## S3 media storage
 

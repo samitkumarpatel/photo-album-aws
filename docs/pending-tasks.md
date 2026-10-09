@@ -16,7 +16,7 @@ Status snapshot: 2026-10-07. 88 tests pass; `npm run build` passes; upload → W
 ## Open follow-ups from wave 1
 
 - Orphaned originals: an object PUT whose intent expired by TTL stays in `originals/`. Needs a scheduled sweeper (EventBridge Scheduler) that deletes objects older than 1 h with no photo item.
-- Editor "Replace original" still uploads multipart through the API (6 MB Lambda limit). Move it to a presigned "new version" endpoint (phase 4).
+- Editor replacement now uses staged presigned uploads with persisted recipes; continue observing processing and storage cleanup on AWS.
 - Worker: mark `FAILED` on the last SQS attempt (`ApproximateReceiveCount`) so photos don't stay `PROCESSING` when messages land in the DLQ.
 - Verify libwebp loads after a SnapStart restore (JPEG fallback otherwise).
 - Video poster frames: ffmpeg Lambda layer behind `PosterExtractor`.
@@ -39,7 +39,13 @@ See `infrastructure/README.md` for the commands.
 
 - **Wave 2** (parallel):
   - Cognito sign-in: Spring Security resource server, album ownership (`gsi1pk OWNER#{sub}`), frontend sign-in screens, Terraform user pool + app client.
-  - Phase 4 album features: non-destructive edits with recipe and revert (presigned new-version upload), Recently Deleted (30-day TTL, `trash/` lifecycle), multi-select bulk delete/move/download, favourites, album cover.
-  - Phase 5 AI service in `ai-service/` (Python container Lambda behind SQS, job records in DynamoDB): background removal, object eraser.
+  - Remaining album features: Recently Deleted (30-day TTL, `trash/` lifecycle), multi-select bulk delete/move/download and favourites. Recipes, version restore, batch editing, covers, branded presentations and slideshows are implemented.
+  - Client portrait background removal, image/color/blur replacement and restore/erase brushes are implemented. For broader object segmentation and object erasing, consider the Phase 5 AI service in `ai-service/` (Python container Lambda behind SQS, job records in DynamoDB): background removal, object eraser.
 - **Wave 3**: phase 6 social features (likes, reactions, comments on shared albums), notifications (SNS, SES), usage analytics in S3 Tables + Athena.
 - Known gaps: summary album listing (avoid reading every partition), timeline index on `takenAt`.
+
+## Creative feature delivery
+
+Implemented: multi-photo/video album creation, private/shared status and revocation, editable share expiry and invitation drafts, central sharing page, edit recipes and version restoration, batch presets/resize/watermarks, background refinements, collage templates/framing/captions/borders/4000 px export, and branded gallery themes/covers/logos/slideshows.
+
+Account security, ownership, password-protected links and premium billing are deliberately scheduled after creative features during development. Email invitations currently open the user's email application; SES delivery and recipient-only access are future work.

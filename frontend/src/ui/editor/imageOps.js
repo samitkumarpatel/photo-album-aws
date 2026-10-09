@@ -63,10 +63,52 @@ export const DEFAULT_EDIT = Object.freeze({
   flipY: false,
   angle: 0,
   text: { value: '', x: 50, y: 85, size: 6, color: '#ffffff' },
-  background: { on: false, fill: 'transparent', color: '#ffffff' },
+  background: { on: false, fill: 'transparent', color: '#ffffff', blur: 30, asset: '', strokes: [] },
+  watermark: { value: '', size: 3, opacity: 60, color: '#ffffff', position: 'bottom-right' },
+  export: { maxSide: 0 },
 })
 
 export const sameEdit = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+/** Recipes from previous editor versions inherit new defaults. */
+export function normalizeEdit(value = {}) {
+  const result = { ...DEFAULT_EDIT, ...value }
+  for (const key of ['adjust', 'filter', 'auto', 'crop', 'text', 'background', 'watermark', 'export']) result[key] = { ...DEFAULT_EDIT[key], ...value[key] }
+  delete result.baseVersion
+  delete result.background.maskData
+  result.background.strokes = Array.isArray(result.background.strokes) ? result.background.strokes : []
+  return result
+}
+
+/** Map a point in the cropped preview back to the unrotated source for persistent brush strokes. */
+export function sourcePoint(u, v, edit, width, height) {
+  const frame = orientedSize(width, height, edit.quarter)
+  let x = (edit.crop.x + u * edit.crop.w) * frame.w - frame.w / 2
+  let y = (edit.crop.y + v * edit.crop.h) * frame.h - frame.h / 2
+  const angle = -edit.angle * Math.PI / 180
+  ;[x, y] = [x * Math.cos(angle) - y * Math.sin(angle), x * Math.sin(angle) + y * Math.cos(angle)]
+  x *= edit.flipX ? -1 : 1; y *= edit.flipY ? -1 : 1
+  const quarter = -edit.quarter * Math.PI / 2
+  ;[x, y] = [x * Math.cos(quarter) - y * Math.sin(quarter), x * Math.sin(quarter) + y * Math.cos(quarter)]
+  const scale = coverScale(frame.w, frame.h, edit.angle)
+  return [Math.max(0, Math.min(1, x / scale / width + 0.5)), Math.max(0, Math.min(1, y / scale / height + 0.5))]
+}
+
+export function paintedMask(mask, strokes = []) {
+  if (!strokes.length) return mask
+  const canvas = document.createElement('canvas'); canvas.width = mask.width; canvas.height = mask.height
+  const ctx = canvas.getContext('2d'); ctx.drawImage(mask, 0, 0)
+  for (const stroke of strokes) {
+    if (!stroke.points?.length) continue
+    ctx.globalCompositeOperation = stroke.mode === 'erase' ? 'destination-out' : 'source-over'
+    ctx.strokeStyle = ctx.fillStyle = '#ffffff'; ctx.lineCap = ctx.lineJoin = 'round'
+    ctx.lineWidth = Math.min(canvas.width, canvas.height) * stroke.size / 100
+    const points = stroke.points.map(([x, y]) => [x * canvas.width, y * canvas.height])
+    ctx.beginPath(); ctx.arc(points[0][0], points[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill()
+    ctx.beginPath(); ctx.moveTo(...points[0]); points.slice(1).forEach(point => ctx.lineTo(...point)); ctx.stroke()
+  }
+  return canvas
+}
 
 /** Combine manual sliders, auto-enhance and the filter into one set of numbers. */
 export function combineParams(edit, autoParams) {
@@ -273,7 +315,7 @@ function sharpen(image, amount) {
  * mode "full" renders the whole (rotated/straightened) frame, used while cropping;
  * mode "final" applies the crop.
  */
-export function render(canvas, source, width, height, edit, params, mode = 'final', backgroundMask = null) {
+export function render(canvas, source, width, height, edit, params, mode = 'final', backgroundMask = null, backgroundImage = null) {
   const frame = orientedSize(width, height, edit.quarter)
   const region = mode === 'final'
     ? { x: edit.crop.x * frame.w, y: edit.crop.y * frame.h, w: edit.crop.w * frame.w, h: edit.crop.h * frame.h }
@@ -286,7 +328,7 @@ export function render(canvas, source, width, height, edit, params, mode = 'fina
   if (edit.background?.on && backgroundMask) {
     ctx.save()
     ctx.globalCompositeOperation = 'destination-in'
-    drawTransformed(ctx, backgroundMask, width, height, edit, region.x, region.y)
+    drawTransformed(ctx, paintedMask(backgroundMask, edit.background.strokes), width, height, edit, region.x, region.y)
     ctx.restore()
   }
   if (params) {
@@ -298,6 +340,21 @@ export function render(canvas, source, width, height, edit, params, mode = 'fina
     ctx.globalCompositeOperation = 'destination-over'
     ctx.fillStyle = edit.background.color
     ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
+  }
+  if (edit.background?.on && backgroundMask && ['image', 'blur'].includes(edit.background.fill)) {
+    ctx.save(); ctx.globalCompositeOperation = 'destination-over'
+    if (edit.background.fill === 'blur') {
+      const back = document.createElement('canvas'); back.width = canvas.width; back.height = canvas.height
+      const bctx = back.getContext('2d'); drawTransformed(bctx, source, width, height, edit, region.x, region.y)
+      ctx.filter = `blur(${Math.max(1, Math.min(canvas.width, canvas.height) * edit.background.blur / 1000)}px)`
+      const margin = Math.min(canvas.width, canvas.height) * edit.background.blur / 250
+      ctx.drawImage(back, -margin, -margin, canvas.width + 2 * margin, canvas.height + 2 * margin)
+    } else if (backgroundImage) {
+      const scale = Math.max(canvas.width / backgroundImage.width, canvas.height / backgroundImage.height)
+      const w = backgroundImage.width * scale, h = backgroundImage.height * scale
+      ctx.drawImage(backgroundImage, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h)
+    }
     ctx.restore()
   }
   if (edit.text?.value.trim()) {
@@ -317,6 +374,15 @@ export function render(canvas, source, width, height, edit, params, mode = 'fina
     lines.forEach((line, i) => ctx.fillText(line, x, y + (i - (lines.length - 1) / 2) * fontSize * 1.2, cropW * 0.9))
     ctx.restore()
   }
+  if (edit.watermark?.value.trim()) {
+    const mark = edit.watermark, size = Math.min(canvas.width, canvas.height) * mark.size / 100
+    const left = mark.position.endsWith('left'), top = mark.position.startsWith('top')
+    ctx.save(); ctx.globalAlpha = mark.opacity / 100; ctx.fillStyle = mark.color
+    ctx.font = `600 ${size}px sans-serif`; ctx.textAlign = left ? 'left' : 'right'; ctx.textBaseline = top ? 'top' : 'bottom'
+    ctx.shadowColor = '#0009'; ctx.shadowBlur = size / 5
+    ctx.fillText(mark.value, left ? size : canvas.width - size, top ? size : canvas.height - size, canvas.width * 0.9)
+    ctx.restore()
+  }
   return canvas
 }
 
@@ -334,7 +400,7 @@ export function scaledCopy(image, maxSide) {
 }
 
 /** Full-resolution export, capped to a pixel budget that mobile browsers can handle. */
-export async function exportBlob(image, edit, params, type, backgroundMask = null) {
+export async function exportBlob(image, edit, params, type, backgroundMask = null, backgroundImage = null) {
   if (edit.background?.on && !backgroundMask) throw new Error('Remove the background before saving.')
   if (edit.background?.on && edit.background.fill === 'transparent' && type !== 'image/png')
     throw new Error('Save a transparent background as PNG.')
@@ -342,8 +408,10 @@ export async function exportBlob(image, edit, params, type, backgroundMask = nul
   const width = image.naturalWidth, height = image.naturalHeight
   const frame = orientedSize(width, height, edit.quarter)
   const area = frame.w * edit.crop.w * frame.h * edit.crop.h
-  const source = area > MAX_PIXELS ? scaledCopy(image, Math.max(width, height) * Math.sqrt(MAX_PIXELS / area)) : image
-  const canvas = render(document.createElement('canvas'), source, source.naturalWidth || source.width, source.naturalHeight || source.height, edit, params, 'final', backgroundMask)
+  const maxSide = edit.export?.maxSide || Infinity
+  const scale = Math.min(1, Math.sqrt(MAX_PIXELS / area), maxSide / Math.max(frame.w * edit.crop.w, frame.h * edit.crop.h))
+  const source = scale < 1 ? scaledCopy(image, Math.max(width, height) * scale) : image
+  const canvas = render(document.createElement('canvas'), source, source.naturalWidth || source.width, source.naturalHeight || source.height, edit, params, 'final', backgroundMask, backgroundImage)
   const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.92))
   if (!blob) throw new Error('Could not create the edited image.')
   return blob

@@ -4,11 +4,11 @@ import {
   Moon, Pipette, Redo2, RotateCcw, Save, SlidersHorizontal, Sparkles, Sun, Sunrise, Thermometer, Triangle,
   Undo2, WandSparkles, X, Blend, Focus, Waves, Film, Type, Scissors,
 } from 'lucide-react'
-import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy } from './imageOps.js'
+import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy, normalizeEdit, sourcePoint } from './imageOps.js'
 import CameraSpinner from '../CameraSpinner.jsx'
-import { api, apiFetch, errorMessage } from '../api.js'
+import { api } from '../api.js'
 import { loadEditableImage } from './loadImage.js'
-import { putFile, uploadToAlbum } from '../upload/uploads.js'
+import { saveEditedPhoto } from './savePhoto.js'
 import './editor.css'
 
 const ICONS = {
@@ -16,7 +16,7 @@ const ICONS = {
   vibrance: Droplets, warmth: Thermometer, tint: Pipette, fade: CloudFog, sharpen: Triangle, vignette: CircleDot,
   clarity: Focus, denoise: Waves, grain: Film, blur: CloudFog,
 }
-const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop], ['text', 'Text', Type], ['background', 'Background', Scissors]]
+const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop], ['text', 'Text', Type], ['background', 'Background', Scissors], ['watermark', 'Watermark', Copy]]
 const PREVIEW_SIDE = 1600
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
@@ -84,6 +84,8 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const [status, setStatus] = useState('loading')
   const [error, setError] = useState('')
   const [edit, setEdit] = useState(DEFAULT_EDIT)
+  const [savedEdit, setSavedEdit] = useState(DEFAULT_EDIT)
+  const baseVersion = useRef(item.version || 1)
   const [history, setHistory] = useState({ stack: [DEFAULT_EDIT], index: 0 })
   const [tab, setTab] = useState('adjust')
   const [active, setActive] = useState('brightness')
@@ -99,11 +101,16 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const [backgroundMask, setBackgroundMask] = useState(null)
   const [backgroundBusy, setBackgroundBusy] = useState(false)
   const [backgroundProgress, setBackgroundProgress] = useState('')
+  const [backgroundImage, setBackgroundImage] = useState(null)
+  const [backgroundImageBusy, setBackgroundImageBusy] = useState(false)
+  const [brushMode, setBrushMode] = useState('off')
+  const [brushSize, setBrushSize] = useState(6)
+  const strokeDrag = useRef(null)
 
   useEffect(() => () => { backgroundWorker.current?.terminate(); backgroundWorker.current = null }, [])
 
   const params = useMemo(() => combineParams(edit, autoParams), [edit, autoParams])
-  const dirty = !sameEdit(edit, DEFAULT_EDIT)
+  const dirty = !sameEdit(edit, savedEdit)
   const cropping = tab === 'crop'
 
   /* open as a modal and load the image */
@@ -120,8 +127,20 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
-    loadEditableImage(src, controller.signal).then(image => {
+    ;(async () => {
+      let editDocument = null
+      try { editDocument = await api('/api/albums/' + item.albumId + '/photos/' + item.id + '/edit', { signal: controller.signal }) }
+      catch (e) { if (e.status !== 404) throw e }
+      const recipe = normalizeEdit(editDocument?.recipe || {})
+      const image = await loadEditableImage(editDocument?.url || src, controller.signal)
+      let mask = null
+      if (editDocument?.recipe?.background?.maskData) {
+        const maskImage = await loadEditableImage(editDocument.recipe.background.maskData, controller.signal)
+        mask = scaledCopy(maskImage, 1024)
+      }
       if (cancelled) return
+      baseVersion.current = editDocument?.baseVersion || item.version || 1
+      setEdit(recipe); setSavedEdit(recipe); setHistory({ stack: [recipe], index: 0 }); setBackgroundMask(mask)
       full.current = image
       preview.current = scaledCopy(image, PREVIEW_SIDE)
       setAutoParams(analyze(image))
@@ -133,9 +152,20 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       }
       setThumbs(next)
       setStatus('ready')
-    }).catch(() => { if (!cancelled) { setStatus('error'); setError('This photo couldn’t be opened for editing. Check your connection, or the format may not be supported in the browser.') } })
+    })().catch(() => { if (!cancelled) { setStatus('error'); setError('This photo couldn’t be opened for editing. Check your connection, or the format may not be supported in the browser.') } })
     return () => { cancelled = true; controller.abort() }
-  }, [src])
+  }, [src, item.albumId, item.id])
+
+  useEffect(() => {
+    let cancelled = false
+    setBackgroundImage(null)
+    if (!edit.background.asset) { setBackgroundImageBusy(false); return }
+    setBackgroundImageBusy(true)
+    loadEditableImage(edit.background.asset).then(image => {
+      if (!cancelled) { setBackgroundImage(image); setBackgroundImageBusy(false) }
+    }).catch(() => { if (!cancelled) { setError('The replacement background couldn’t be opened. Choose another image.'); setBackgroundImageBusy(false) } })
+    return () => { cancelled = true }
+  }, [edit.background.asset])
 
   /* keep track of the space available for the preview */
   useEffect(() => {
@@ -152,14 +182,14 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     const frame = requestAnimationFrame(() => {
       const p = preview.current
       if (comparing) render(canvas.current, p, p.width, p.height, DEFAULT_EDIT, null, 'final')
-      else render(canvas.current, p, p.width, p.height, edit, params, cropping ? 'full' : 'final', backgroundMask)
+      else render(canvas.current, p, p.width, p.height, edit, params, cropping ? 'full' : 'final', backgroundMask, backgroundImage)
       const cw = canvas.current.width, ch = canvas.current.height
       const scale = Math.min(stageSize.w / cw, stageSize.h / ch, 1.5)
       const next = { w: Math.floor(cw * scale), h: Math.floor(ch * scale) }
       setDisplay(prev => prev.w === next.w && prev.h === next.h ? prev : next)
     })
     return () => cancelAnimationFrame(frame)
-  }, [status, edit, params, cropping, comparing, stageSize, backgroundMask])
+  }, [status, edit, params, cropping, comparing, stageSize, backgroundMask, backgroundImage])
 
   /* history: commit a snapshot shortly after changes settle */
   useEffect(() => {
@@ -247,6 +277,36 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const resetCrop = () => update({ crop: DEFAULT_EDIT.crop, aspect: 'free', quarter: 0, flipX: false, flipY: false, angle: 0 })
   const geometryChanged = !sameEdit({ c: edit.crop, q: edit.quarter, x: edit.flipX, y: edit.flipY, a: edit.angle }, { c: DEFAULT_EDIT.crop, q: 0, x: false, y: false, a: 0 })
 
+  async function chooseBackground(file) {
+    if (!file) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { setError('Choose a PNG, JPEG or WebP background.'); return }
+    const objectUrl = URL.createObjectURL(file)
+    try {
+      const image = await loadEditableImage(objectUrl)
+      const asset = scaledCopy(image, 1024).toDataURL('image/webp', 0.85)
+      setBackground({ asset, fill: 'image' }); setError('')
+    } catch { setError('This background image couldn’t be opened.') }
+    finally { URL.revokeObjectURL(objectUrl) }
+  }
+  function brushPoint(event) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    return sourcePoint((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height, edit, full.current.naturalWidth, full.current.naturalHeight)
+  }
+  function brushStart(event) {
+    if (!edit.background.on || brushMode === 'off' || saving || comparing) return
+    event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId)
+    const stroke = { mode: brushMode, size: brushSize, points: [brushPoint(event)] }
+    strokeDrag.current = { id: event.pointerId, stroke }
+    setBackground({ strokes: [...edit.background.strokes, stroke].slice(-500) })
+  }
+  function brushMove(event) {
+    const drag = strokeDrag.current
+    if (!drag || drag.id !== event.pointerId || drag.stroke.points.length >= 2000) return
+    const points = [...drag.stroke.points, brushPoint(event)]
+    drag.stroke = { ...drag.stroke, points }
+    setBackground({ strokes: [...edit.background.strokes.slice(0, -1), drag.stroke] })
+  }
+
   /* crop dragging */
   function startDrag(e, handle) {
     e.preventDefault(); e.stopPropagation()
@@ -264,34 +324,14 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   /* closing & saving */
   const requestClose = () => { if (saving) return; cancelBackground(); if (dirty) setConfirmDiscard(true); else onClose() }
   async function save(mode) {
-    if (backgroundBusy || saving || status !== 'ready') return
+    if (backgroundBusy || backgroundImageBusy || saving || status !== 'ready' || (edit.background.on && edit.background.fill === 'image' && !backgroundImage)) return
     setSaveMenu(false); setSaving(mode); setError('')
     try {
       const { type, name, copyName } = outputFormat(item.contentType, item.filename, edit.background.on && edit.background.fill === 'transparent')
-      const blob = await exportBlob(full.current, edit, params, type, backgroundMask)
+      const blob = await exportBlob(full.current, edit, params, type, backgroundMask, backgroundImage)
       const file = new File([blob], mode === 'copy' ? copyName : name, { type })
-      // A copy is a normal upload. In AWS, replacement images also use S3 presigned uploads because Lambda/API
-      // Gateway cannot reliably receive multipart bodies. Local development keeps the direct multipart endpoint.
-      if (mode === 'copy') { onSaved(await uploadToAlbum(item.albumId, file), mode); return }
-      if (import.meta.env.VITE_API_BASE_URL) {
-        const path = '/api/albums/' + item.albumId + '/photos/' + item.id + '/replacement'
-        const request = { filename: file.name, contentType: file.type, size: file.size }
-        const intent = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) })
-        await putFile(intent, file)
-        const saved = await api(path + '/' + intent.uploadId + '/' + intent.version + '/complete', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
-        })
-        onSaved(saved, mode)
-        return
-      }
-      const data = new FormData()
-      data.append('file', file)
-      const response = await apiFetch('/api/albums/' + item.albumId + '/photos/' + item.id, { method: 'PUT', body: data })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error(response.status === 413 ? 'The edited photo is too large to upload.' : errorMessage(response.status, body, 'Saving failed. Please try again.'))
-      }
-      onSaved(await response.json(), mode)
+      const recipe = { ...edit, baseVersion: baseVersion.current, background: { ...edit.background, maskData: backgroundMask?.toDataURL('image/png') || '' } }
+      onSaved(await saveEditedPhoto(item, file, recipe, mode), mode)
     } catch (e) { setError(e.message); setSaving(null) }
   }
 
@@ -311,6 +351,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       <button className="ed-text-button" onClick={requestClose} disabled={!!saving}>Cancel</button>
       <div className="ed-history">
         <button className="ed-icon" aria-label="Undo" title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo || !!saving}><Undo2 size={20} /></button>
+        <button className="ed-icon" aria-label="Reset all edits" title="Reset all edits" disabled={!!saving || status !== 'ready' || sameEdit(edit, DEFAULT_EDIT)} onClick={() => setEdit(DEFAULT_EDIT)}><RotateCcw size={20} /></button>
         <button className="ed-icon" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo || !!saving}><Redo2 size={20} /></button>
         <button className={'ed-icon' + (comparing ? ' on' : '')} aria-label="Hold to compare with original" title="Hold to compare" disabled={!dirty || status !== 'ready'}
           onPointerDown={() => setComparing(true)} onPointerUp={() => setComparing(false)} onPointerLeave={() => setComparing(false)} onPointerCancel={() => setComparing(false)}
@@ -318,7 +359,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
           onContextMenu={e => e.preventDefault()}><Eye size={20} /></button>
       </div>
       <div className="ed-save">
-        <button className="ed-primary" onClick={() => setSaveMenu(v => !v)} disabled={!dirty || !!saving || backgroundBusy || status !== 'ready'} aria-haspopup="menu" aria-expanded={saveMenu}>
+        <button className="ed-primary" onClick={() => setSaveMenu(v => !v)} disabled={!dirty || !!saving || backgroundBusy || backgroundImageBusy || (edit.background.on && edit.background.fill === 'image' && !backgroundImage) || status !== 'ready'} aria-haspopup="menu" aria-expanded={saveMenu}>
           {saving ? <CameraSpinner size={19} inherit decorative /> : <Check size={17} />}{saving ? 'Saving…' : 'Save'}
         </button>
         {saveMenu && <div className="ed-menu" role="menu">
@@ -331,7 +372,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     <div className="ed-stage" ref={stage} onPointerDown={() => saveMenu && setSaveMenu(false)}>
       {status === 'loading' && <div className="ed-status" role="status"><CameraSpinner size={64} inherit decorative /><span>Opening photo…</span></div>}
       {status === 'error' && <div className="ed-status"><span>{error}</span><button className="ed-primary" onClick={onClose}>Close</button></div>}
-      <div className={'ed-canvas-wrap' + (edit.background.on && !comparing && edit.background.fill === 'transparent' ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
+      <div onPointerDown={tab === 'background' ? brushStart : undefined} onPointerMove={tab === 'background' ? brushMove : undefined} onPointerUp={() => { strokeDrag.current = null }} onPointerCancel={() => { strokeDrag.current = null }} className={'ed-canvas-wrap' + (tab === 'background' && brushMode !== 'off' ? ' ed-brush' : '') + (edit.background.on && !comparing && edit.background.fill === 'transparent' ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
         <canvas ref={canvas} aria-label={comparing ? 'Original photo' : 'Edited photo preview'} role="img" />
         {comparing && <span className="ed-badge">Original</span>}
         {cropping && !comparing && <div className="ed-crop-layer" onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
@@ -347,6 +388,14 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
     <section className="ed-panel" aria-label="Editing tools">
       <div className="ed-tool">
+        {tab === 'watermark' && <div className="ed-text-tools">
+          <label>Watermark<input maxLength={90} value={edit.watermark.value} placeholder="© Your name" onChange={e => update({ watermark: { ...edit.watermark, value: e.target.value } })} /></label>
+          <label>Position<select value={edit.watermark.position} onChange={e => update({ watermark: { ...edit.watermark, position: e.target.value } })}>{['bottom-right', 'bottom-left', 'top-right', 'top-left'].map(position => <option key={position} value={position}>{position.replace('-', ' ')}</option>)}</select></label>
+          <label>Color<input type="color" value={edit.watermark.color} onChange={e => update({ watermark: { ...edit.watermark, color: e.target.value } })} /></label>
+          <Slider label="Watermark size" value={edit.watermark.size} min={1} max={12} format={v => v + '%'} onChange={size => update({ watermark: { ...edit.watermark, size } })} />
+          <Slider label="Watermark opacity" value={edit.watermark.opacity} min={10} max={100} format={v => v + '%'} onChange={opacity => update({ watermark: { ...edit.watermark, opacity } })} />
+          <label>Export size<select value={edit.export.maxSide} onChange={e => update({ export: { maxSide: Number(e.target.value) } })}><option value="0">Full size · up to 16 MP</option><option value="4096">4096 px</option><option value="2400">2400 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option></select></label>
+        </div>}
         {tab === 'background' && <div className="ed-background-tools">
           <p className="ed-hint">Remove the background around a person. Works best with clear portraits. Processing happens on your device; the first use downloads the tool.</p>
           {backgroundBusy ? <div className="ed-background-progress"><span role="status"><CameraSpinner size={20} inherit decorative />{backgroundProgress}</span><button className="ed-secondary" onClick={cancelBackground}>Cancel removal</button></div>
@@ -358,7 +407,16 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
               <button className={'ed-ratio' + (edit.background.fill === 'color' ? ' selected' : '')} aria-pressed={edit.background.fill === 'color'} onClick={() => setBackground({ fill: 'color' })} disabled={!!saving}>Solid color</button>
               {edit.background.fill === 'color' && <label>Color <input type="color" aria-label="Background color" value={edit.background.color} onChange={e => setBackground({ color: e.target.value })} disabled={!!saving} /></label>}
             </div>
-            <p className="ed-hint">{edit.background.fill === 'transparent' ? 'The checkerboard shows transparency. Saved as PNG to keep the background transparent.' : 'Your selected color will be included in the saved photo.'}</p>
+            <div className="ed-background-actions" role="group" aria-label="More background options">
+              <button className={'ed-ratio' + (edit.background.fill === 'blur' ? ' selected' : '')} aria-pressed={edit.background.fill === 'blur'} onClick={() => setBackground({ fill: 'blur' })}>Blur background</button>
+              <label className="ed-ratio">Upload background<input type="file" accept="image/png,image/jpeg,image/webp" disabled={!!saving} onChange={e => { chooseBackground(e.target.files?.[0]); e.target.value = '' }} /></label>
+              {edit.background.asset && <button className={'ed-ratio' + (edit.background.fill === 'image' ? ' selected' : '')} aria-pressed={edit.background.fill === 'image'} onClick={() => setBackground({ fill: 'image' })}>Use image</button>}
+            </div>
+            {edit.background.fill === 'blur' && <Slider label="Background blur" value={edit.background.blur} min={5} max={100} onChange={blur => setBackground({ blur })} />}
+            <div className="ed-background-actions" role="group" aria-label="Refine background edges">{[['off', 'Pan / view'], ['restore', 'Restore brush'], ['erase', 'Erase brush']].map(([mode, label]) => <button key={mode} className={'ed-ratio' + (brushMode === mode ? ' selected' : '')} aria-pressed={brushMode === mode} onClick={() => setBrushMode(mode)} disabled={!!saving}>{label}</button>)}</div>
+            {brushMode !== 'off' && <Slider label="Brush size" value={brushSize} min={1} max={25} format={v => v + '%'} onChange={setBrushSize} />}
+            {!!edit.background.strokes.length && <button className="ed-text-button" onClick={() => setBackground({ strokes: [] })} disabled={!!saving}>Reset brush strokes</button>}
+            <p className="ed-hint">{edit.background.fill === 'transparent' ? 'The checkerboard shows transparency. Saved as PNG to keep the background transparent.' : edit.background.fill === 'blur' ? 'The original background is blurred behind the person.' : 'Your replacement background will be included in the saved photo.'}</p>
           </>}
         </div>}
         {tab === 'text' && <div className="ed-text-tools">
@@ -415,7 +473,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
       <nav className="ed-tabs" aria-label="Tool">
         {TABS.map(([key, label, Icon]) => {
-          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : geometryChanged
+          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : key === 'watermark' ? !!edit.watermark.value : geometryChanged
           return <button key={key} aria-pressed={tab === key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>
             <span className="ed-tab-icon"><Icon size={21} />{marked && <i className="ed-dot" />}</span><span>{label}</span>
           </button>

@@ -120,7 +120,7 @@
 .ed-auto .ed-slider { padding: 0 4px; }
 
 /* tabs */
-.ed-tabs { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid var(--ed-line); }
+.ed-tabs { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--ed-line); }
 .ed-tabs button { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 60px; padding: 8px 0; border: 0; background: transparent; color: var(--ed-muted) !important; font-size: 12px; font-weight: 600; }
 .ed-tabs button.selected { color: var(--ed-accent) !important; }
 .ed-tab-icon { position: relative; display: inline-grid; }
@@ -159,3 +159,5 @@
 .ed-background-tools input[type=color] { width: 44px; height: 32px; background: transparent; border: 0; }
 .ed-background-progress span { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; }
 @media (max-width: 380px) { .ed-tabs button { font-size: 10px; } }
+
+.ed-brush {touch-action:none;cursor:crosshair}

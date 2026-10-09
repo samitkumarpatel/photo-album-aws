@@ -63,4 +63,10 @@ public interface AlbumRepository {
 
     /** Every share link created for this album, expired or not; the caller filters by {@code expiresAt}. */
     List<ShareSummary> listShares(UUID albumId);
+
+    /** Album-scoped creative metadata, stored separately from photo rows. */
+    void putMetadata(UUID albumId, String key, String json);
+    Optional<String> getMetadata(UUID albumId, String key);
+    java.util.Map<String, String> listMetadata(UUID albumId, String prefix);
+    void deleteMetadata(UUID albumId, String prefix);
 }

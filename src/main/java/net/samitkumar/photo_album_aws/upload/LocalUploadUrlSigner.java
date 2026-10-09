@@ -36,6 +36,10 @@ public class LocalUploadUrlSigner implements UploadUrlSigner {
         long expires = Instant.now().plus(media.uploadUrlTtl()).getEpochSecond();
         String url = "/api/uploads/" + albumId + "/" + photoId + "?expires=" + expires
                 + "&signature=" + signature(albumId, photoId, objectKey, contentType, size, expires);
+        if (objectKey.startsWith("replacement-uploads/")) {
+            url += "&objectKey=" + java.net.URLEncoder.encode(objectKey, StandardCharsets.UTF_8)
+                    + "&contentType=" + java.net.URLEncoder.encode(contentType, StandardCharsets.UTF_8) + "&size=" + size;
+        }
         return new PresignedUpload(url, Map.of("Content-Type", contentType), Instant.ofEpochSecond(expires));
     }
 

@@ -62,6 +62,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
     private final DynamoDbTable<AlbumItem> albums;
     private final DynamoDbTable<PhotoItem> photos;
     private final DynamoDbTable<ShareItem> shares;
+    private final DynamoDbTable<MetadataItem> metadata;
 
     public DynamoDbAlbumRepository(DynamoDbClient client, DynamoDbEnhancedClient enhanced, String tableName) {
         this.client = client;
@@ -70,6 +71,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
         this.albums = enhanced.table(tableName, TableSchema.fromBean(AlbumItem.class));
         this.photos = enhanced.table(tableName, TableSchema.fromBean(PhotoItem.class));
         this.shares = enhanced.table(tableName, TableSchema.fromBean(ShareItem.class));
+        this.metadata = enhanced.table(tableName, TableSchema.fromBean(MetadataItem.class));
     }
 
     @Override
@@ -123,6 +125,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
 
     @Override
     public Optional<Album> delete(UUID albumId) {
+        deleteMetadata(albumId, "");
         var partition = loadPartition(albumId);
         partition.ifPresent(p -> {
             List<Key> keys = new ArrayList<>();
@@ -235,6 +238,27 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
                 .flatMap(page -> page.items().stream())
                 .map(i -> new ShareSummary(i.getPk().substring(SHARE_PREFIX.length()), UUID.fromString(i.getAlbumId()), i.getExpiresAt()))
                 .toList();
+    }
+
+    @Override public void putMetadata(UUID albumId, String key, String json) {
+        var item = new MetadataItem();
+        item.setPk(albumPk(albumId)); item.setSk("EXTRA#" + key); item.setJson(json);
+        enhanced.transactWriteItems(TransactWriteItemsEnhancedRequest.builder()
+                .addConditionCheck(albums, ConditionCheck.builder().key(Key.builder().partitionValue(albumPk(albumId)).sortValue(META).build()).conditionExpression(EXISTS).build())
+                .addPutItem(metadata, item).build());
+    }
+    @Override public Optional<String> getMetadata(UUID albumId, String key) {
+        var item = metadata.getItem(GetItemEnhancedRequest.builder().key(Key.builder().partitionValue(albumPk(albumId)).sortValue("EXTRA#" + key).build()).consistentRead(true).build());
+        return Optional.ofNullable(item).map(MetadataItem::getJson);
+    }
+    @Override public Map<String, String> listMetadata(UUID albumId, String prefix) {
+        var result = new TreeMap<String, String>();
+        var query = QueryEnhancedRequest.builder().queryConditional(QueryConditional.sortBeginsWith(k -> k.partitionValue(albumPk(albumId)).sortValue("EXTRA#" + prefix))).consistentRead(true).build();
+        metadata.query(query).items().forEach(item -> result.put(item.getSk().substring(6), item.getJson()));
+        return result;
+    }
+    @Override public void deleteMetadata(UUID albumId, String prefix) {
+        listMetadata(albumId, prefix).keySet().forEach(key -> metadata.deleteItem(Key.builder().partitionValue(albumPk(albumId)).sortValue("EXTRA#" + key).build()));
     }
 
     /* ---------- helpers ---------- */

@@ -9,6 +9,7 @@ infrastructure/
   stacks/backend/1.0.0/     versioned, self-contained application backend stack
   stacks/frontend/1.0.0/   per-site private S3 and CloudFront stack, with optional ACM custom domain
   stacks/github-actions/1.0.0/ per-repository GitHub Actions deploy role
+  stacks/route53/1.0.0/    public hosted zone and ALIAS records pointing at the frontend and API
   modules/api_gateway_http/0.0.1/ shared HTTP API Gateway with routing, logs, CORS, throttling, and optional custom domains
   environments/dev/         dev inputs/state; calls the account-level GitHub OIDC provider stack
   environments/prod/        prod inputs and separate state; pins stack version 1.0.0
@@ -84,13 +85,46 @@ The OIDC trust policy matches this repository's owner/repository and the `dev` G
 
 The backend stack creates one shared HTTP API Gateway. A Lambda can define `http_router` as a map from public path to the path handled by the Lambda, for example `http_router = { "/api" = "/router/api" }`. Terraform creates `ANY /api` and `ANY /api/{proxy+}` routes. The exact route forwards to `/router/api`; the proxy route appends the remaining path, so `/api/albums/1` reaches `/router/api/albums/1`. Query strings and request headers pass through the Lambda proxy integration.
 
-API Gateway access logs are enabled in dev and prod and retained for seven days. The stack also supports API level CORS, per route throttling, and a regional custom domain through the `api_*` inputs on the backend module. Set explicit CORS origins before enabling browser CORS; an empty list leaves CORS handling to the application. Custom domains require an ACM certificate in the API's AWS region. The `api_custom_domain_target` and `api_custom_domain_hosted_zone_id` outputs provide the DNS target details.
+API Gateway access logs are enabled in dev and prod and retained for seven days. The stack also supports API level CORS, per route throttling, and a regional custom domain through the `api_*` inputs on the backend module. Set explicit CORS origins before enabling browser CORS; an empty list leaves CORS handling to the application. Custom domains require an ACM certificate in the API's AWS region: pass an existing one as `api_certificate_arn`, or set `api_route53_zone_id` and the stack creates and DNS-validates it. The `dns_alias` output (or `api_custom_domain_target` and `api_custom_domain_hosted_zone_id`) provides the DNS target details.
 
 ## Frontend hosting
 
 The `stacks/frontend/1.0.0` stack creates a private S3 bucket and one CloudFront distribution per site name. The dev root calls it with `for_each = toset(["photo-album"])`. CloudFront serves frontend files from S3 and has `/api` and `/actuator` behaviors pointing to API Gateway. The frontend deployment workflow builds with `VITE_API_BASE_URL` set to the dev API Gateway URL, uploads the files to S3, and invalidates CloudFront. API Gateway CORS allows the frontend CloudFront origin. A CloudFront Function routes client-side frontend paths to `index.html`. The `frontend_sites` output gives the bucket name, distribution ID, hostname, site URL, and optional certificate ARN for each site.
 
-Custom domains are optional. Set `domain_name` and `route53_zone_id` on a site module instance to create an ACM certificate in `us-east-1`, add DNS validation and CloudFront alias records, and attach the certificate to the distribution. Leave both unset to use the default CloudFront hostname without ACM.
+Custom domains are optional. Set `domain_name` and `route53_zone_id` on a site module instance to create an ACM certificate in `us-east-1`, add DNS validation and CloudFront alias records, and attach the certificate to the distribution. `alternative_domain_names` adds more hostnames (such as `www`) to the certificate and distribution. Set `create_alias_records = false` when the route53 stack owns the A/AAAA records; the site's `dns_alias` output is the record target. Leave `domain_name` unset to use the default CloudFront hostname without ACM.
+
+## DNS
+
+`stacks/route53/1.0.0` creates a public hosted zone (or, with `create_zone = false`, uses an existing public zone of the same name) and the user-facing ALIAS records. Each record is keyed by its name relative to the zone, with `"@"` for the apex, and its value is a stack's `dns_alias` output. CloudFront targets get A and AAAA records; the API Gateway regional domain gets an A record. Certificate validation records stay in the frontend and backend stacks, next to their certificates.
+
+Dev sets the domain once in `local.domain` in `environments/dev/main.tf`. The placeholder `your-task.dev` must be replaced with a domain you own. Dev then serves the website at the apex and `www`, and the API at `api.<domain>`:
+
+```hcl
+module "route53" {
+  source = "../../stacks/route53/1.0.0"
+
+  dns = local.domain
+  records = {
+    "@" = module.frontend["photo-album"].dns_alias
+    www = module.frontend["photo-album"].dns_alias
+    api = module.photo_album.dns_alias
+  }
+}
+```
+
+The same local supplies the frontend `domain_name`/`alternative_domain_names`, the backend `api_domain_name`, and the extra API CORS origins. The frontend's CloudFront `/api` origin stays on the execute-api hostname, so the site works whether or not the API custom domain is used. The frontend workflow's `VITE_API_BASE_URL` can be switched to `https://api.<domain>` once the domain is live.
+
+A newly created hosted zone is not authoritative until the registrar delegates to it. ACM validation, and therefore the CloudFront and API custom domains, waits until delegation works; `aws_acm_certificate_validation` fails after its timeout if it never does. For the first apply, create the zone, delegate it, then apply the rest:
+
+```sh
+cd infrastructure/environments/dev
+terraform apply -target=module.route53.aws_route53_zone.this
+terraform output dns    # copy name_servers into the domain's NS records at the registrar
+dig NS your-task.dev +short
+terraform apply
+```
+
+If the domain is registered in Route 53 Domains in the same account, Route 53 can create the zone at registration; in that case use `create_zone = false` (or import the zone) instead of creating a second zone with different name servers.
 
 ## Resources and permissions
 

@@ -1155,21 +1155,19 @@ function SharingPage() {
 
 function ShareLinkSettings({ link, album, onSaved }) {
   const localDate = iso => { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16) }
-  const [expiry, setExpiry] = useState(localDate(link.expiresAt)), [label, setLabel] = useState(link.label || ''), [recipient, setRecipient] = useState(link.recipient || '')
+  const [expiry, setExpiry] = useState(localDate(link.expiresAt)), [label, setLabel] = useState(link.label || '')
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   async function save(e) {
     e.preventDefault(); setBusy(true); setError('')
-    try { await api('/api/albums/' + album.id + '/shares/' + link.token, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt: new Date(expiry).toISOString(), label, recipient }) }); await onSaved() }
+    try { await api('/api/albums/' + album.id + '/shares/' + link.token, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt: new Date(expiry).toISOString(), label }) }); await onSaved() }
     catch (e) { setError(e.message) } finally { setBusy(false) }
   }
-  return <details><summary>Edit expiry & invitation</summary><form onSubmit={save}><label className="field">Label<input maxLength={90} value={label} onChange={e => setLabel(e.target.value)} /></label><label className="field">Recipient email<input type="email" maxLength={254} value={recipient} onChange={e => setRecipient(e.target.value)} /></label><label className="field">Expires at<input required type="datetime-local" value={expiry} onChange={e => setExpiry(e.target.value)} /></label>{error && <p role="alert">{error}</p>}<button className="button secondary" disabled={busy}>Save link settings</button></form></details>
+  return <details><summary>Edit expiry & label</summary><form onSubmit={save}><label className="field">Label<input maxLength={90} value={label} onChange={e => setLabel(e.target.value)} /></label><label className="field">Expires at<input required type="datetime-local" value={expiry} onChange={e => setExpiry(e.target.value)} /></label>{error && <p role="alert">{error}</p>}<button className="button secondary" disabled={busy}>Save link settings</button></form></details>
 }
-const invitationUrl = (album, link) => 'mailto:' + encodeURIComponent(link.recipient || '') + '?subject=' + encodeURIComponent('Photos: ' + album.name) + '&body=' + encodeURIComponent('You are invited to view “' + album.name + '”.\n\n' + location.origin + '/share/' + link.token + '\n\nLink expires ' + new Date(link.expiresAt).toLocaleString())
 
 function ShareDialog({ album, close, notify, onChanged }) {
   useSharingClock()
   const [label, setLabel] = useState('')
-  const [recipient, setRecipient] = useState('')
   const [amount, setAmount] = useState(1)
   const [unit, setUnit] = useState('WEEKS')
   const [custom, setCustom] = useState(false)
@@ -1189,7 +1187,7 @@ function ShareDialog({ album, close, notify, onChanged }) {
   useEffect(() => { loadLinks() }, [loadLinks])
   async function create(e) {
     e.preventDefault(); setBusy(true); setError('')
-    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit, label, recipient }) })); setCopied(false); await loadLinks(); await onChanged?.() }
+    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit, label }) })); setCopied(false); await loadLinks(); await onChanged?.() }
     catch (e) { setError(e.message) }
     finally { setBusy(false) }
   }
@@ -1214,21 +1212,19 @@ function ShareDialog({ album, close, notify, onChanged }) {
       <p className="field-label">Active links</p>
       <ul>
         {visibleLinks.map(l => <li key={l.token} className="share-link-row">
-          <strong>{l.label || 'Share link'}{l.recipient ? ' · ' + l.recipient : ''}</strong>
+          <strong>{l.label || 'Share link'}</strong>
           <span><Clock3 size={14} />Expires {new Date(l.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
           <a className="pill" href={location.origin + "/share/" + l.token} target="_blank" rel="noreferrer">Open link</a>
           <button type="button" className="button secondary" onClick={() => copy(location.origin + '/share/' + l.token)}><Copy size={16} />Copy</button>
           <button type="button" className="button secondary" aria-label="Revoke this link" disabled={!!revoking} onClick={() => revoke(l.token)}>
             {revoking === l.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}Revoke
           </button>
-          <a className="button secondary" href={invitationUrl(album, l)}>Invite by email</a>
           <ShareLinkSettings link={l} album={album} onSaved={async () => { await loadLinks(); await onChanged?.() }} />
         </li>)}
       </ul>
     </div>}
     {!share ? <form onSubmit={create}>
       <label className="field">Link label<input maxLength={90} value={label} onChange={e => setLabel(e.target.value)} placeholder="Family, client, event…" /></label>
-      <label className="field">Recipient email · optional<input type="email" maxLength={254} value={recipient} onChange={e => setRecipient(e.target.value)} /><small>Invitations open your email app. Anyone with this link can view the album.</small></label>
       <p className="field-label" id="expiry-label">Link expires after</p>
       <div className="chip-row" role="group" aria-labelledby="expiry-label">
         {presets.map(([value, label]) => {
@@ -1255,7 +1251,6 @@ function ShareDialog({ album, close, notify, onChanged }) {
       <div className="expiry-summary"><Clock3 size={16} /><span>Expires {new Date(share.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
       <ErrorNotice message={error} />
       <div className="dialog-actions">
-        <a className="button secondary" href={invitationUrl(album, share)}>Invite by email</a>
         {typeof navigator.share === 'function' && <button className="button secondary" onClick={nativeShare}><Share2 size={18} />Send…</button>}
         <button className="button secondary" onClick={close}>Done</button>
       </div>

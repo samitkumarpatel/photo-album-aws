@@ -28,9 +28,20 @@ variable "api_domain_name" {
 }
 
 variable "api_certificate_arn" {
-  description = "ACM certificate ARN for api_domain_name."
+  description = "Existing ACM certificate ARN for api_domain_name, known at plan time. Leave null and set api_route53_zone_id to have the stack create one."
   type        = string
   default     = null
+}
+
+variable "api_route53_zone_id" {
+  description = "Route 53 hosted zone ID used to DNS-validate a stack-created certificate for api_domain_name. The API alias record itself is left to the caller (see the dns_alias output)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.api_domain_name == null || var.api_certificate_arn != null || var.api_route53_zone_id != null
+    error_message = "api_domain_name requires api_certificate_arn or api_route53_zone_id."
+  }
 }
 
 variable "api_route_throttling" {

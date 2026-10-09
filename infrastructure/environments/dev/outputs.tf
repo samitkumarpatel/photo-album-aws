@@ -3,6 +3,15 @@ output "api_url" {
   value       = module.photo_album.api_url
 }
 
+output "dns" {
+  description = "Hosted zone details. Set name_servers as the domain's NS records at the registrar."
+  value = {
+    zone_id      = module.route53.zone_id
+    name_servers = module.route53.name_servers
+    records      = module.route53.fqdns
+  }
+}
+
 output "frontend_sites" {
   description = "Frontend bucket, CloudFront, and URL details keyed by site name."
   value = {

@@ -10,6 +10,8 @@ import net.samitkumar.photo_album_aws.upload.UploadUrlSigner;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.InvalidMediaTypeException;
@@ -47,9 +49,19 @@ public class AlbumController {
     private final MediaUrlSigner mediaUrlSigner;
     private final ProcessingTrigger processingTrigger;
     private final PhotoHistory history;
+    /** Off until email delivery and recipient verification exist: a recipient email is only an unverified label. */
+    private final boolean emailSharingEnabled;
 
     public AlbumController(AlbumRepository repository, MediaStorage mediaStorage, UploadUrlSigner uploadUrlSigner,
                            MediaUrlSigner mediaUrlSigner, ProcessingTrigger processingTrigger) {
+        this(repository, mediaStorage, uploadUrlSigner, mediaUrlSigner, processingTrigger, false);
+    }
+
+    @Autowired
+    public AlbumController(AlbumRepository repository, MediaStorage mediaStorage, UploadUrlSigner uploadUrlSigner,
+                           MediaUrlSigner mediaUrlSigner, ProcessingTrigger processingTrigger,
+                           @Value("${spring.application.sharing.email-enabled:false}") boolean emailSharingEnabled) {
+        this.emailSharingEnabled = emailSharingEnabled;
         this.repository = repository;
         this.mediaStorage = mediaStorage;
         this.uploadUrlSigner = uploadUrlSigner;
@@ -340,7 +352,7 @@ public class AlbumController {
         Instant expiresAt = ZonedDateTime.now(ZoneOffset.UTC).plus(request.amount(), unit).toInstant();
         byte[] tokenBytes = new byte[32]; secureRandom.nextBytes(tokenBytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(tokenBytes);
-        ShareDetails details = shareDetails(request.label(), request.recipient());
+        ShareDetails details = shareDetails(request.label(), request.recipient(), "");
         repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
         repository.saveShare(token, new Share(albumId, expiresAt));
         return new ShareResponse(token, expiresAt, details.label(), details.recipient());
@@ -367,8 +379,14 @@ public class AlbumController {
         repository.deleteMetadata(albumId, "SHARE#" + token);
     }
 
-    private static ShareDetails shareDetails(String label, String recipient) {
-        String name = label == null ? "" : label.trim(), email = recipient == null ? "" : recipient.trim();
+    /**
+     * A null recipient keeps {@code storedRecipient}. While email sharing is off, setting a recipient is refused; links
+     * that already carry one keep working as ordinary bearer links, since the email was never checked on access.
+     */
+    private ShareDetails shareDetails(String label, String recipient, String storedRecipient) {
+        if (recipient != null && !recipient.isBlank() && !emailSharingEnabled)
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Sharing by email is not available yet. Share a link instead.");
+        String name = label == null ? "" : label.trim(), email = recipient == null ? storedRecipient : recipient.trim();
         if (name.length() > 90 || email.length() > 254 || (!email.isEmpty() && !email.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Use a label up to 90 characters and a valid recipient email");
         return new ShareDetails(name, email);
@@ -384,7 +402,7 @@ public class AlbumController {
         if (!current.expiresAt().isAfter(Instant.now())) throw new ResponseStatusException(HttpStatus.GONE, "This link expired. Create a new link.");
         if (request.expiresAt() == null || !request.expiresAt().isAfter(Instant.now()) || request.expiresAt().isAfter(Instant.now().plus(Duration.ofDays(3650))))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose a future expiry within 10 years");
-        ShareDetails details = shareDetails(request.label(), request.recipient());
+        ShareDetails details = shareDetails(request.label(), request.recipient(), shareResponse(albumId, token, current.expiresAt()).recipient());
         repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
         repository.saveShare(token, new Share(albumId, request.expiresAt()));
         return shareResponse(albumId, token, request.expiresAt());

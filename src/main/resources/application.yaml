@@ -23,6 +23,9 @@ spring:
       # in-process (default): the API makes thumbnails itself on a background thread.
       # events (AWS): S3 notifications feed the worker Lambda through SQS, so the API does nothing.
       mode: ${PHOTO_ALBUM_PROCESSING_MODE:in-process}
+    sharing:
+      # Recipient emails on share links. Off until email delivery and recipient verification exist; link sharing is unaffected.
+      email-enabled: ${PHOTO_ALBUM_SHARING_EMAIL_ENABLED:false}
     lambda:
       # The native Lambda image serves HTTP for the API and SQS event payloads for the worker.
       role: ${PHOTO_ALBUM_LAMBDA_ROLE:api}

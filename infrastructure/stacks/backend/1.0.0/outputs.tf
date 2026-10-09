@@ -13,6 +13,15 @@ output "api_custom_domain_hosted_zone_id" {
   value       = module.api_gateway_http.custom_domain_hosted_zone_id
 }
 
+output "dns_alias" {
+  description = "Route 53 ALIAS target for api_domain_name; null without a custom domain."
+  value = var.api_domain_name != null ? {
+    name    = module.api_gateway_http.custom_domain_target
+    zone_id = module.api_gateway_http.custom_domain_hosted_zone_id
+    ipv6    = false
+  } : null
+}
+
 output "functions" {
   description = "Function names."
   value       = keys(aws_lambda_function.this)

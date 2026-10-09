@@ -4,6 +4,7 @@ locals {
   bucket_name     = "${var.name}-${var.environment}-${data.aws_caller_identity.current.account_id}-frontend"
   api_domain_name = trimsuffix(trimprefix(var.api_url, "https://"), "/")
   has_domain      = var.domain_name != null
+  domain_names    = local.has_domain ? concat([var.domain_name], var.alternative_domain_names) : []
   has_media       = var.media_bucket_name != null
   common_tags     = merge(var.tags, { Site = var.name, Environment = var.environment })
 }
@@ -93,7 +94,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   comment             = "${var.name} ${var.environment} frontend"
   default_root_object = "index.html"
-  aliases             = local.has_domain ? [var.domain_name] : []
+  aliases             = local.domain_names
   price_class         = var.price_class
   wait_for_deployment = true
   tags                = local.common_tags
@@ -249,9 +250,10 @@ resource "aws_acm_certificate" "frontend" {
   count    = local.has_domain ? 1 : 0
   provider = aws.us_east_1
 
-  domain_name       = var.domain_name
-  validation_method = "DNS"
-  tags              = local.common_tags
+  domain_name               = var.domain_name
+  subject_alternative_names = var.alternative_domain_names
+  validation_method         = "DNS"
+  tags                      = local.common_tags
 
   lifecycle {
     create_before_destroy = true
@@ -283,11 +285,12 @@ resource "aws_acm_certificate_validation" "frontend" {
   validation_record_fqdns = [for record in aws_route53_record.certificate_validation : record.fqdn]
 }
 
+# Alias records are optional so a separate DNS stack can own the user-facing records instead.
 resource "aws_route53_record" "frontend_a" {
-  count   = local.has_domain ? 1 : 0
-  zone_id = var.route53_zone_id
-  name    = var.domain_name
-  type    = "A"
+  for_each = var.create_alias_records ? toset(local.domain_names) : toset([])
+  zone_id  = var.route53_zone_id
+  name     = each.value
+  type     = "A"
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name
@@ -297,10 +300,10 @@ resource "aws_route53_record" "frontend_a" {
 }
 
 resource "aws_route53_record" "frontend_aaaa" {
-  count   = local.has_domain ? 1 : 0
-  zone_id = var.route53_zone_id
-  name    = var.domain_name
-  type    = "AAAA"
+  for_each = var.create_alias_records ? toset(local.domain_names) : toset([])
+  zone_id  = var.route53_zone_id
+  name     = each.value
+  type     = "AAAA"
 
   alias {
     name                   = aws_cloudfront_distribution.frontend.domain_name

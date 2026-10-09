@@ -421,6 +421,41 @@ class AlbumControllerTests {
     }
 
     @Test
+    void emailSharingIsRefusedWhileDisabledButLabelledLinksWork() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        assertStatus(HttpStatus.FORBIDDEN, () -> controller.createShare(album.id(),
+                new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS, "Family", "someone@example.com")));
+        assertTrue(controller.listShares(album.id()).isEmpty());
+
+        var link = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS, "Family", ""));
+        assertEquals("Family", link.label());
+        assertEquals("", link.recipient());
+        assertEquals("Trip", controller.sharedAlbum(link.token()).name());
+
+        Instant later = link.expiresAt().plus(Duration.ofDays(1));
+        assertStatus(HttpStatus.FORBIDDEN, () -> controller.updateShare(album.id(), link.token(),
+                new AlbumController.UpdateShare(later, "Family", "someone@example.com")));
+        assertEquals(later, controller.updateShare(album.id(), link.token(), new AlbumController.UpdateShare(later, "Family 2", null)).expiresAt());
+        assertEquals("Family 2", controller.listShares(album.id()).getFirst().label());
+    }
+
+    @Test
+    void existingEmailSharesKeepWorkingAsLinksWhileEmailSharingIsDisabled() {
+        var enabled = new AlbumController(repository, storage, uploadSigner, new ApiMediaUrlSigner(), (albumId, photoId) -> {}, true);
+        var album = enabled.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var invite = enabled.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS, "Gran", "gran@example.com"));
+        assertEquals("gran@example.com", invite.recipient());
+
+        // Switched off: the link still opens, and editing its expiry or label keeps the stored recipient.
+        assertEquals("Trip", controller.sharedAlbum(invite.token()).name());
+        Instant later = invite.expiresAt().plus(Duration.ofDays(1));
+        var updated = controller.updateShare(album.id(), invite.token(), new AlbumController.UpdateShare(later, "Grandma", null));
+        assertEquals("gran@example.com", updated.recipient());
+        controller.revokeShare(album.id(), invite.token());
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.sharedAlbum(invite.token()));
+    }
+
+    @Test
     void externalUrlsRedirectAndSharedOnesExpireWithTheLink() throws IOException {
         var notAfter = new AtomicReference<Instant>();
         var redirecting = controller((photo, size, key, apiPath, limit) -> {

@@ -42,8 +42,19 @@ variable "domain_name" {
   default     = null
 }
 
+variable "alternative_domain_names" {
+  description = "Extra custom domains served by this distribution, such as \"www.example.com\". Added to the certificate and CloudFront aliases."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = var.domain_name != null || length(var.alternative_domain_names) == 0
+    error_message = "alternative_domain_names requires domain_name."
+  }
+}
+
 variable "route53_zone_id" {
-  description = "Route 53 hosted zone ID for ACM validation and the CloudFront alias record. Required with domain_name."
+  description = "Route 53 hosted zone ID for ACM validation and the CloudFront alias records. Required with domain_name."
   type        = string
   default     = null
 
@@ -51,6 +62,12 @@ variable "route53_zone_id" {
     condition     = var.domain_name == null || var.route53_zone_id != null
     error_message = "route53_zone_id is required when domain_name is configured."
   }
+}
+
+variable "create_alias_records" {
+  description = "Create A/AAAA alias records for the custom domains. Set false when another stack, such as stacks/route53, owns them via the dns_alias output."
+  type        = bool
+  default     = true
 }
 
 variable "price_class" {

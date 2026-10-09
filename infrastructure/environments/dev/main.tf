@@ -6,6 +6,9 @@ locals {
   region           = "eu-north-1"
   media_cdn_domain = "d38gufr7jg1s4v.cloudfront.net"
 
+  # Placeholder: replace with a domain you own. The website is served at the apex and www, the API at api.
+  domain = "your-task.dev"
+
   lambda = {
     "photo-album-dev-api" = {
       architecture = "x86_64"
@@ -88,8 +91,10 @@ module "photo_album" {
   lambda                 = local.lambda
   dynamodb               = local.dynamodb
   s3                     = local.s3
-  api_cors_allow_origins = ["https://d38gufr7jg1s4v.cloudfront.net"]
+  api_cors_allow_origins = ["https://d38gufr7jg1s4v.cloudfront.net", "https://${local.domain}", "https://www.${local.domain}"]
   api_enable_access_logs = true
+  api_domain_name        = "api.${local.domain}"
+  api_route53_zone_id    = module.route53.zone_id
   sqs = [
     {
       name      = "photo-album-dev-processing"
@@ -111,13 +116,26 @@ module "frontend" {
   media_bucket_name  = one(module.photo_album.s3_buckets)
   media_key_group_id = aws_cloudfront_key_group.media.id
 
-  # Set both values to enable an ACM certificate, DNS validation, and a custom domain.
-  domain_name     = null
-  route53_zone_id = null
+  # Creates the us-east-1 certificate and CloudFront aliases; the route53 module owns the A/AAAA records.
+  domain_name              = local.domain
+  alternative_domain_names = ["www.${local.domain}"]
+  route53_zone_id          = module.route53.zone_id
+  create_alias_records     = false
 
   providers = {
     aws           = aws
     aws.us_east_1 = aws.us_east_1
+  }
+}
+
+module "route53" {
+  source = "../../stacks/route53/1.0.0"
+
+  dns = local.domain
+  records = {
+    "@" = module.frontend["photo-album"].dns_alias
+    www = module.frontend["photo-album"].dns_alias
+    api = module.photo_album.dns_alias
   }
 }
 

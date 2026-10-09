@@ -30,7 +30,7 @@ jobs:
       cancel-in-progress: false
     env:
       AWS_REGION: eu-north-1
-      VITE_API_BASE_URL: https://xltzg907fi.execute-api.eu-north-1.amazonaws.com
+      VITE_API_BASE_URL: https://api.your-task.dev
       FRONTEND_BUCKET: photo-album-dev-257222191091-frontend
       CLOUDFRONT_DISTRIBUTION_ID: E265JXMW0GJPCK
 

@@ -248,5 +248,5 @@ module "api_gateway_http" {
   log_retention_days = var.api_log_retention_days
   route_throttling   = var.api_route_throttling
   domain_name        = var.api_domain_name
-  certificate_arn    = var.api_certificate_arn
+  certificate_arn    = local.create_api_certificate ? aws_acm_certificate_validation.api[0].certificate_arn : var.api_certificate_arn
 }

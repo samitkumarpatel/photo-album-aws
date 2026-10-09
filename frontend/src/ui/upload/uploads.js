@@ -79,13 +79,15 @@ export function completeUpload(albumId, photoId, signal) {
   return api('/api/albums/' + albumId + '/uploads/' + photoId + '/complete', { method: 'POST', signal })
 }
 
-/** Older backends: multipart POST through the API. The body is encoded by hand so its hash matches the bytes sent. */
+/** Older backends: multipart POST through the API. */
 export async function multipartUpload(albumId, file, onProgress, signal) {
   const url = '/api/albums/' + albumId + '/photos'
   const { body, contentType } = multipartBody([['file', file]])
   const headers = { 'Content-Type': contentType }
-  const hash = await sha256Hex(body)
-  if (hash) headers[HASH_HEADER] = hash
+  if (isApiUrl(url)) {
+    const hash = await sha256Hex(body)
+    if (hash) headers[HASH_HEADER] = hash
+  }
   const { status, text } = await send({ method: 'POST', url, headers, body, onProgress, signal })
   if (status < 200 || status >= 300) throw failure(status, text, 'Upload failed. Try again.')
   return JSON.parse(text)

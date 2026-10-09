@@ -167,6 +167,21 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     return () => { cancelled = true }
   }, [edit.background.asset])
 
+  // Follow the visible viewport when a phone keyboard opens, keeping the preview above the tools.
+  useEffect(() => {
+    const viewport = window.visualViewport
+    if (!viewport) return
+    const updateViewport = () => {
+      dialog.current?.style.setProperty('--ed-viewport-height', Math.min(window.innerHeight, viewport.height) + 'px')
+      // The tool panel just got shorter; scroll the field being typed in back into it.
+      const active = document.activeElement
+      if (dialog.current?.contains(active) && active.matches('input, textarea, select')) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }))
+    }
+    updateViewport()
+    viewport.addEventListener('resize', updateViewport)
+    return () => viewport.removeEventListener('resize', updateViewport)
+  }, [])
+
   /* keep track of the space available for the preview */
   useEffect(() => {
     const node = stage.current
@@ -409,7 +424,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
             </div>
             <div className="ed-background-actions" role="group" aria-label="More background options">
               <button className={'ed-ratio' + (edit.background.fill === 'blur' ? ' selected' : '')} aria-pressed={edit.background.fill === 'blur'} onClick={() => setBackground({ fill: 'blur' })}>Blur background</button>
-              <label className="ed-ratio">Upload background<input type="file" accept="image/png,image/jpeg,image/webp" disabled={!!saving} onChange={e => { chooseBackground(e.target.files?.[0]); e.target.value = '' }} /></label>
+              <label className="ed-ratio">Upload background<input className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" disabled={!!saving} onChange={e => { chooseBackground(e.target.files?.[0]); e.target.value = '' }} /></label>
               {edit.background.asset && <button className={'ed-ratio' + (edit.background.fill === 'image' ? ' selected' : '')} aria-pressed={edit.background.fill === 'image'} onClick={() => setBackground({ fill: 'image' })}>Use image</button>}
             </div>
             {edit.background.fill === 'blur' && <Slider label="Background blur" value={edit.background.blur} min={5} max={100} onChange={blur => setBackground({ blur })} />}

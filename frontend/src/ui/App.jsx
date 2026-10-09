@@ -4,7 +4,7 @@ import CameraSpinner, { PageLoader } from './CameraSpinner.jsx'
 import {
   ArrowDownToLine, ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, Camera, Check, CheckCircle2, ChevronLeft, ChevronRight,
   Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2, LayoutGrid,
-  Minimize2, Monitor, Moon, Pencil, RotateCcw, SlidersHorizontal, Sun, Trash2, TriangleAlert, Upload, X, ZoomIn, ZoomOut,
+  Minimize2, Monitor, Moon, Pencil, RotateCcw, SlidersHorizontal, Star, Sun, Trash2, TriangleAlert, Upload, X, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import './editor/collage.css'
 import { api } from './api.js'
@@ -309,7 +309,7 @@ function TopBar({ onUpload }) {
   return <header className={'topbar' + (searching ? ' searching' : '')}>
     <div className="topbar-inner">
       <Link to="/" className="brand" aria-label="Stillroom home"><span className="brand-mark"><Camera size={19} /></span><span>Stillroom</span></Link>
-      <nav className="tabs" aria-label="Library sections"><LibraryNav /><Link to="/sharing">Sharing</Link></nav>
+      <nav className="tabs" aria-label="Library sections"><LibraryNav /></nav>
       <div className="topbar-actions">
         {searching
           ? <div className="search-field">
@@ -330,10 +330,12 @@ function TopBar({ onUpload }) {
 function LibraryNav() {
   const { pathname } = useLocation()
   const photosActive = pathname === '/photos'
+  const sharingActive = pathname === '/sharing'
   const albumsActive = pathname === '/' || pathname.startsWith('/albums')
   return <>
     <Link to="/" aria-current={albumsActive ? 'page' : undefined} className={'nav-item' + (albumsActive ? ' active' : '')}><FolderOpen size={20} /><span>Albums</span></Link>
     <Link to="/photos" aria-current={photosActive ? 'page' : undefined} className={'nav-item' + (photosActive ? ' active' : '')}><Images size={20} /><span>Photos</span></Link>
+    <Link to="/sharing" aria-current={sharingActive ? 'page' : undefined} className={'nav-item' + (sharingActive ? ' active' : '')}><Share2 size={20} /><span>Sharing</span></Link>
   </>
 }
 
@@ -346,6 +348,29 @@ function Hero({ title, description, cover, back, children }) {
     {description && <p>{description}</p>}
     {children && <div className="hero-actions">{children}</div>}
   </section>
+}
+
+function AlbumHeader({ album, items, back, children }) {
+  const cover = coverOf(items, album.presentation)
+  return <header className="album-header">
+    {back && <div className="album-breadcrumb">{back}</div>}
+    <div className="album-heading">
+      {cover && <img className="album-heading-cover" src={cover} alt="" />}
+      <div className="album-heading-copy"><h1>{album.name}</h1>
+        <div className="album-meta"><span>{countLabel(items)}</span>{album.shares != null && <SharingBadge album={album} />}</div>
+        {album.description && <p className="album-description">{album.description}</p>}
+      </div>
+    </div>
+    {children && <div className="album-actions">{children}</div>}
+    {(album.presentation?.brandName || album.presentation?.logo) && <Branding presentation={album.presentation} />}
+  </header>
+}
+
+function GalleryControls({ selection, filters, items }) {
+  return <>
+    <div className="gallery-controls">{selection && !selection.enabled && <SelectionToolbar selection={selection} visible={filters.filtered} />}<MediaToolbar filters={filters} items={items} /></div>
+    {selection?.enabled && <SelectionToolbar selection={selection} visible={filters.filtered} />}
+  </>
 }
 
 function ErrorNotice({ message, retry }) {
@@ -406,23 +431,15 @@ function SharingBadge({ album }) {
   return <span className={'sharing-badge' + (links.length ? ' shared' : '')}><Share2 size={13} />{album.shares == null ? 'Sharing status unavailable' : links.length ? 'Shared · ' + plural(links.length, 'active link') : 'Private'}</span>
 }
 
-function AlbumSharing({ album, onManage }) {
-  useSharingClock()
-  const links = activeShares(album)
-  return <div className="album-sharing"><SharingBadge album={album} />
-    {links.length > 0 && <span>Next link expires {new Date(links[0].expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>}
-    <button className="button secondary" onClick={onManage}>{links.length ? 'View links & revoke' : 'Sharing settings'}</button>
-  </div>
-}
-
 function useMediaSelection(items) {
   const [enabled, setEnabled] = useState(false)
   const [ids, setIds] = useState(() => new Set())
   const { createAlbum, createCollage, batchEdit } = useUI()
   const ready = items.filter(item => statusOf(item) === 'READY')
   const chosen = ready.filter(item => ids.has(item.id))
+  const select = id => { setEnabled(true); setIds(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else if (next.size < 100) next.add(id); return next }) }
   const cancel = () => { setEnabled(false); setIds(new Set()) }
-  return { enabled, setEnabled, ids, chosen, cancel,
+  return { enabled, setEnabled, ids, chosen, cancel, select,
     toggle: id => setIds(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else if (next.size < 100) next.add(id); return next }),
     selectAll: visible => setIds(new Set(visible.filter(item => statusOf(item) === 'READY').slice(0, 100).map(item => item.id))),
     create: () => createAlbum(chosen),
@@ -431,15 +448,16 @@ function useMediaSelection(items) {
 }
 
 function SelectionToolbar({ selection, visible }) {
-  if (!selection.enabled) return visible.some(item => statusOf(item) === 'READY') && <div className="selection-toolbar"><button className="button secondary" onClick={() => selection.setEnabled(true)}><CheckCircle2 size={18} />Select photos & videos</button></div>
+  if (!selection.enabled) return visible.some(item => statusOf(item) === 'READY') && <div className="selection-entry"><button className="button secondary" onClick={() => selection.setEnabled(true)}><CheckCircle2 size={18} />Select</button></div>
   const canCollage = selection.chosen.length >= 2 && selection.chosen.length <= 9 && selection.chosen.every(item => !isVideo(item))
-  return <div className="selection-toolbar" role="region" aria-label="Media selection">
+  return <div className="selection-toolbar is-active" role="region" aria-label="Media selection">
     <span role="status">{plural(selection.chosen.length, 'item')} selected · up to 100</span>
     <button className="button secondary" onClick={() => selection.selectAll(visible)}>Select visible</button>
     <button className="button secondary" onClick={selection.cancel}>Cancel selection</button>
     <button className="button primary" disabled={!selection.chosen.length} onClick={selection.create}><FolderPlus size={18} />Create album</button>
     <button className="button secondary" disabled={!canCollage} onClick={selection.collage} aria-describedby={canCollage ? undefined : 'collage-selection-hint'}><LayoutGrid size={18} />Create collage</button>
     <button className="button secondary" disabled={!selection.chosen.length || selection.chosen.some(isVideo)} onClick={selection.batch}><SlidersHorizontal size={18} />Batch edit photos</button>
+    {selection.cover && <button className="button secondary" disabled={selection.chosen.length !== 1 || !canBeCover(selection.chosen[0])} onClick={() => selection.cover(selection.chosen[0])} title="Select one photo to use as the album cover"><Star size={18} />Set as cover</button>}
     {!canCollage && <small id="collage-selection-hint" className="selection-hint">For a collage, select 2–9 photos.</small>}
   </div>
 }
@@ -506,8 +524,7 @@ function PhotoLibrary() {
     <Hero title="Photos" description={loading ? 'Loading your library…' : query ? plural(filters.filtered.length, 'match') + ' for “' + query.trim() + '”' : countLabel(items)}>
       <button className="button primary" onClick={() => uploadMedia()}><Upload size={18} />Upload</button>
     </Hero>
-    <SelectionToolbar selection={selection} visible={filters.filtered} />
-    <MediaToolbar filters={filters} items={items} />
+    <GalleryControls selection={selection} filters={filters} items={items} />
     <ErrorNotice message={error} retry={refresh} />
     {loading ? <PageLoader label="Loading your photos…" />
       : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} />
@@ -558,7 +575,7 @@ function ThumbnailMedia({ item, src, quiet }) {
   return <>{spinner}<img ref={imgRef} className={(loaded ? 'loaded' : '') + (aspect ? ' sized' : '')} style={aspect} src={src} alt={item.filename} loading="lazy" decoding="async" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} /></>
 }
 
-function MediaTile({ item, index, onOpen, onDelete, selection }) {
+function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
   const status = statusOf(item)
   const style = { '--i': Math.min(index, 12) }
   if (isBroken(item)) {
@@ -573,16 +590,24 @@ function MediaTile({ item, index, onOpen, onDelete, selection }) {
   const pending = status === 'UPLOADING' || status === 'PROCESSING'
   const open = isViewable(item)
   const state = status === 'UPLOADING' ? 'Uploading' : 'Processing'
-  return <button className={'media-tile' + (pending ? ' pending' : '') + (selection?.ids.has(item.id) ? ' media-selected' : '')} style={style} aria-pressed={selection?.enabled ? selection.ids.has(item.id) : undefined} aria-disabled={(selection?.enabled ? status === 'READY' : open) ? undefined : true}
-    onClick={() => { if (selection?.enabled) { if (status === 'READY') selection.toggle(item.id) } else if (open) onOpen(item) }} aria-label={selection?.enabled ? (selection.ids.has(item.id) ? 'Deselect ' : 'Select ') + item.filename + (status !== 'READY' ? ' (not ready)' : '') : !pending ? 'View ' + item.filename : open ? 'View ' + item.filename + ' (processing)' : state + ' ' + item.filename}>
-    <Thumbnail item={item} />
-    {selection?.enabled && <span className="selection-check" aria-hidden="true">{selection.ids.has(item.id) && <Check size={18} />}</span>}
-    {pending && <span className="tile-status" aria-hidden="true"><CameraSpinner size={30} inherit decorative /><span>{state}…</span></span>}
-    <span className="media-label">{item.filename}</span>
-  </button>
+  const selected = selection?.ids.has(item.id)
+  const selectable = !!selection && status === 'READY'
+  const label = selection?.enabled ? (selected ? 'Deselect ' : 'Select ') + item.filename + (!selectable ? ' (not ready)' : '') : 'View ' + item.filename + (pending ? ' (' + state.toLowerCase() + ')' : '')
+  return <div className={'media-tile' + (pending ? ' pending' : '') + (selected ? ' media-selected' : '') + (selection?.enabled ? ' selection-mode' : '')} style={style}>
+    <button className="media-open" disabled={selection?.enabled ? !selectable : !open} aria-label={label} aria-pressed={selection?.enabled ? !!selected : undefined}
+      onClick={() => { if (selection?.enabled) { if (selectable) selection.toggle(item.id) } else if (open) onOpen(item) }}>
+      <Thumbnail item={item} />
+      {pending && <span className="tile-status" aria-hidden="true"><CameraSpinner size={30} inherit decorative /><span>{state}…</span></span>}
+      <span className="media-label">{item.filename}</span>
+      {isCover && <span className="cover-badge"><Star size={12} fill="currentColor" aria-hidden="true" />Cover</span>}
+    </button>
+    {selectable && <button className="tile-select" role="checkbox" aria-checked={!!selected} aria-label={'Select ' + item.filename} onClick={() => selection.select(item.id)}>
+      <span className="selection-check" aria-hidden="true">{selected && <Check size={18} />}</span>
+    </button>}
+  </div>
 }
 
-function MediaGroups({ items, onOpen, onDelete, selection }) {
+function MediaGroups({ items, onOpen, onDelete, selection, coverId }) {
   const groups = items.reduce((all, item) => {
     const date = new Date(item.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
     ;(all[date] ||= []).push(item)
@@ -590,29 +615,52 @@ function MediaGroups({ items, onOpen, onDelete, selection }) {
   }, {})
   return Object.entries(groups).map(([date, media]) => <section className="date-group" key={date}>
     <h2 className="group-heading"><span>{date}</span></h2>
-    <Masonry items={media} render={(item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} />} />
+    <JustifiedGallery items={media} render={(item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} isCover={item.id === coverId} />} />
   </section>)
 }
 
-const columnQueries = [[1200, 5], [900, 4], [600, 3], [0, 2]]
-function useColumns() {
-  const pick = () => columnQueries.find(([width]) => window.innerWidth >= width)[1]
-  const [columns, setColumns] = useState(pick)
-  useEffect(() => {
-    const resize = () => setColumns(pick())
-    window.addEventListener('resize', resize)
-    return () => window.removeEventListener('resize', resize)
-  }, [])
-  return columns
+// Shape used for layout; extreme panoramas and tall strips are clamped so one item can't swallow a row.
+const tileAspect = item => {
+  if (isBroken(item) || !(item.width > 0 && item.height > 0)) return 0.8
+  return Math.min(2.4, Math.max(0.55, item.width / item.height))
 }
 
-// Items flow left to right across columns; a short group stays centered instead of hugging the left edge.
-function Masonry({ items, render }) {
-  const count = Math.min(useColumns(), items.length)
-  const columns = Array.from({ length: count }, () => [])
-  items.forEach((item, i) => columns[i % count].push([item, i]))
-  return <div className="masonry" style={{ '--cols': count }}>
-    {columns.map((column, c) => <div className="masonry-col" key={c}>{column.map(([item, i]) => render(item, i))}</div>)}
+// Breaks items into rows of equal height that exactly fill the measured width, keeping each item's shape.
+function justifyRows(items, width, targetHeight, gap) {
+  const rows = []
+  let row = [], sum = 0
+  for (const item of items) {
+    const aspect = tileAspect(item)
+    row.push([item, aspect]); sum += aspect
+    if (sum * targetHeight + gap * (row.length - 1) >= width) {
+      rows.push({ items: row, height: (width - gap * (row.length - 1)) / sum, full: true })
+      row = []; sum = 0
+    }
+  }
+  // The last row keeps the target height instead of stretching a few items across the page.
+  if (row.length) rows.push({ items: row, height: Math.min(targetHeight, rows.at(-1)?.height ?? targetHeight), full: false })
+  return rows
+}
+
+// Measure the gallery itself so split windows and embedded layouts get suitable row heights.
+function JustifiedGallery({ items, render }) {
+  const ref = useRef(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)))
+    observer.observe(ref.current)
+    return () => observer.disconnect()
+  }, [])
+  const gap = width >= 900 ? 12 : width >= 600 ? 10 : 6
+  const target = width >= 1100 ? 260 : width >= 820 ? 220 : width >= 560 ? 180 : 140
+  let index = 0
+  return <div ref={ref} className="justified" style={{ '--gap': gap + 'px' }}>
+    {width > 0 && justifyRows(items, width, target, gap).map(row => <div className="justified-row" key={row.items[0][0].id} style={{ height: Math.round(row.height) + 'px' }}>
+      {row.items.map(([item, aspect]) => <div className="justified-cell" key={item.id}
+        style={row.full ? { flex: aspect + ' 1 0' } : { width: Math.round(aspect * row.height) + 'px', flex: 'none' }}>
+        {render(item, index++)}
+      </div>)}
+    </div>)}
   </div>
 }
 
@@ -663,10 +711,14 @@ function useAlbum(path, revision = 0) {
   return { album, loading: loading || (!album && !error), error, reload, invalidate, retry: () => setRetry(value => value + 1) }
 }
 
+const canBeCover = item => !isVideo(item) && statusOf(item) === 'READY'
+// The chosen cover, or the first ready photo when none is chosen (or the chosen one was removed).
+const coverPhotoOf = (items, presentation) => items.find(item => item.id === presentation?.coverPhotoId && canBeCover(item)) || items.find(canBeCover)
 function coverOf(items, presentation) {
-  const photo = items.find(item => item.id === presentation?.coverPhotoId && !isVideo(item) && statusOf(item) === 'READY') || items.find(item => !isVideo(item) && statusOf(item) === 'READY')
+  const photo = coverPhotoOf(items, presentation)
   return photo ? mediaUrl(photo, 'thumbnail') : undefined
 }
+const PRESENTATION_DEFAULTS = { theme: 'classic', coverPhotoId: null, logo: null, brandName: '', watermark: '', slideshowSeconds: 5 }
 
 function Branding({ presentation }) { return presentation && <div className="album-brand">{presentation.logo && <img src={presentation.logo} alt="Brand logo" />}{presentation.brandName && <strong>{presentation.brandName}</strong>}{presentation.watermark && <span className="album-watermark">{presentation.watermark}</span>}</div> }
 
@@ -684,7 +736,14 @@ function AlbumPage() {
   const navigate = useNavigate()
   const items = useMemo(() => withStaged(state.album?.photos || [], staged, albumId).map(item => ({ ...item, albumId, albumName: state.album?.name })), [state.album, staged, albumId])
   const filters = useMediaFilters(items, query)
-  const selection = useMediaSelection(items)
+  const coverId = coverPhotoOf(items, state.album?.presentation)?.id
+  const setCover = async item => {
+    try {
+      await api('/api/albums/' + albumId + '/presentation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...PRESENTATION_DEFAULTS, ...state.album.presentation, coverPhotoId: item.id }) })
+      notify('Album cover updated'); await state.reload(); refresh()
+    } catch (e) { notify(e.message || 'Couldn’t update the album cover.') }
+  }
+  const selection = { ...useMediaSelection(items), cover: async chosen => { await setCover(chosen); selection.cancel() } }
   const viewable = useMemo(() => filters.filtered.filter(isViewable), [filters.filtered])
   const selected = items.find(item => item.id === params.get('media') && isViewable(item))
   // Poll the album while photos are processing; refresh the library once they have all settled.
@@ -713,30 +772,29 @@ function AlbumPage() {
     await refresh()
   }
   const back = <Link className="back" to="/"><ArrowLeft size={17} />All albums</Link>
-  return <main id="main" className={'page album-theme-' + (state.album?.presentation?.theme || 'classic')}>
+  return <main id="main" className={'page album-page album-theme-' + (state.album?.presentation?.theme || 'classic')}>
     {state.loading ? <><section className="hero">{back}</section><PageLoader label="Opening album…" /></>
       : state.album ? <>
-          <Hero back={back} cover={coverOf(items, state.album.presentation)} title={state.album.name} description={[state.album.description, countLabel(items)].filter(Boolean).join(' — ')}>
+          <AlbumHeader album={state.album} items={items} back={back}>
             <button className="button primary" onClick={() => uploadMedia(albumId)}><ImagePlus size={18} />Add photos</button>
-            <button className="button secondary" onClick={() => setShareOpen(true)}><Share2 size={17} />{activeShares(state.album).length ? "Manage sharing" : "Share"}</button>
+            <button className="button secondary" aria-label={activeShares(state.album).length ? "Manage album sharing" : "Share album"} onClick={() => setShareOpen(true)}><Share2 size={17} />Share</button>
+            {!!items.filter(isViewable).length && <button className="button secondary album-slideshow" onClick={() => setSlideshowOpen(true)}><Play size={18} /><span>Slideshow</span></button>}
             <Menu label="Album options" className="button secondary round" align="right" icon={<Ellipsis size={20} />} items={[
+              ...(items.some(isViewable) ? [{ key: 'slideshow', label: 'Slideshow', icon: <Play size={18} />, onSelect: () => setSlideshowOpen(true) }] : []),
               { key: 'presentation', label: 'Album presentation', icon: <Image size={18} />, onSelect: () => setPresentationOpen(true) },
               { key: 'rename', label: 'Rename', icon: <Pencil size={18} />, onSelect: () => setEditing(true) },
               { key: 'delete', label: 'Delete album', icon: <Trash2 size={18} />, danger: true, onSelect: () => setRemovingAlbum(true) },
             ]} />
-          </Hero>
-          <Branding presentation={state.album.presentation} />
-          {!!items.filter(isViewable).length && <button className="button secondary" onClick={() => setSlideshowOpen(true)}><Play size={18} />Slideshow</button>}
-          <AlbumSharing album={state.album} onManage={() => setShareOpen(true)} />
+          </AlbumHeader>
           <ErrorNotice message={state.error} retry={state.retry} />
-          <SelectionToolbar selection={selection} visible={filters.filtered} />
-          <MediaToolbar filters={filters} items={items} />
-          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} />
+          <GalleryControls selection={selection} filters={filters} items={items} />
+          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} coverId={coverId} />
             : items.length ? <Empty icon={Search} title="Nothing matches" description="Try a different search or filter."><button className="button secondary" onClick={() => { setQuery(''); filters.setType('all') }}>Reset filters</button></Empty>
             : <button className="drop-hint" onClick={() => uploadMedia(albumId)}><ImagePlus size={34} /><strong>Add the first photos</strong><span>Tap to choose, or drag files anywhere on this page</span></button>}
         </>
       : <><Hero back={back} title="Album unavailable" /><ErrorNotice message={state.error} retry={state.retry} /></>}
-    {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={closeViewer} onDelete={() => setDeleting(selected)} onEdit={() => photoEdit.edit(selected)} onHistory={() => photoEdit.history(selected)} />}
+    {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={closeViewer} onDelete={() => setDeleting(selected)} onEdit={() => photoEdit.edit(selected)} onHistory={() => photoEdit.history(selected)}
+      onCover={canBeCover(selected) ? () => setCover(selected) : undefined} isCover={selected.id === coverId} />}
     {photoEdit.editor}
     {deleting && <DeleteDialog item={deleting} close={() => setDeleting(null)} onDelete={deleteMedia} />}
     {presentationOpen && <Suspense fallback={<PageLoader label="Opening presentation settings…" />}><AlbumPresentation album={state.album} items={items} Dialog={Dialog} close={() => setPresentationOpen(false)} onSaved={async () => { setPresentationOpen(false); notify('Album presentation saved'); await refresh() }} /></Suspense>}
@@ -758,13 +816,29 @@ function Dialog({ title, description, close, busy = false, children, wide = fals
     document.documentElement.style.overflow = 'hidden'
     node.showModal()
     node.querySelector('[data-autofocus]')?.focus()
-    return () => { node.close(); document.documentElement.style.overflow = overflow; if (previous?.isConnected) previous.focus() }
+    // When the on-screen keyboard shrinks the viewport, bring the field being typed in back into view.
+    const reveal = () => { const active = document.activeElement; if (node.contains(active) && active.matches('input, textarea, select')) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' })) }
+    const viewport = window.visualViewport || window
+    viewport.addEventListener('resize', reveal)
+    return () => { viewport.removeEventListener('resize', reveal); node.close(); document.documentElement.style.overflow = overflow; if (previous?.isConnected) previous.focus() }
   }, [])
   return <dialog ref={ref} tabIndex={-1} className={'dialog' + (wide ? ' dialog-wide' : '')} aria-label={title}
     onKeyDown={e => trapFocus(ref.current, e)}
     onCancel={e => { e.preventDefault(); if (!busy) close() }}
     onClick={e => { if (e.target === e.currentTarget && !busy) close() }}>
-    <div className="dialog-body">
+    <div className="dialog-body" onFocusCapture={event => {
+      const body = event.currentTarget, preview = body.querySelector('.collage-preview:has(canvas)')
+      if (!preview || preview.contains(event.target)) return
+      const target = event.target.closest('label') || event.target
+      if (!(preview.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING)) return
+      requestAnimationFrame(() => {
+        if (!target.isConnected) return
+        const bounds = target.getBoundingClientRect(), image = preview.getBoundingClientRect()
+        const bottom = Math.min(body.getBoundingClientRect().bottom, window.visualViewport?.height || window.innerHeight) - 12
+        if (bounds.top < image.bottom + 12) body.scrollTop -= image.bottom + 12 - bounds.top
+        else if (bounds.bottom > bottom) body.scrollTop += bounds.bottom - bottom
+      })
+    }}>
       <span className="sheet-handle" aria-hidden="true" />
       <div className="dialog-heading"><h2>{title}</h2><button className="icon-button" aria-label={'Close ' + title} onClick={close} disabled={busy}><X size={20} /></button></div>
       {description && <p className="dialog-description">{description}</p>}
@@ -1191,7 +1265,7 @@ function ShareDialog({ album, close, notify, onChanged }) {
 
 /* ---------- viewer ---------- */
 
-function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory }) {
+function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, onCover, isCover }) {
   const ref = useRef(null)
   const stage = useRef(null)
   const img = useRef(null)
@@ -1437,6 +1511,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory }
       <button className="icon-button" aria-label="Close viewer" onClick={close}><X size={22} /></button>
       <div className="viewer-title"><strong>{current.filename}</strong><span>{date} · {index + 1} of {items.length}</span></div>
       <div className="viewer-actions">
+        {onCover && <button className={'icon-button' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
         {onHistory && !video && <button className="icon-button" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
         {onEdit && !video && <button className="icon-button" aria-label="Edit photo" title="Edit" onClick={onEdit}><SlidersHorizontal size={20} /></button>}
         {!video && <button className="icon-button hide-small" aria-label="Zoom in" title="Zoom in (+)" onClick={() => zoomBy(1.5)}><ZoomIn size={20} /></button>}
@@ -1532,12 +1607,10 @@ function SharedAlbumPage() {
       <span className="read-only"><Share2 size={14} />View only</span>
       <ThemeMenu />
     </div></header>
-    <main id="main" className={'page album-theme-' + (state.album?.presentation?.theme || 'classic')}>
+    <main id="main" className={'page album-page album-theme-' + (state.album?.presentation?.theme || 'classic')}>
       {state.loading ? <PageLoader label="Opening shared album…" />
         : state.album ? <>
-            <Hero cover={coverOf(items, state.album.presentation)} title={state.album.name} description={[state.album.description || 'Shared with you', countLabel(items)].join(' — ')} />
-            <Branding presentation={state.album.presentation} />
-            {!!items.length && <button className="button secondary" onClick={() => setSlideshowOpen(true)}><Play size={18} />Slideshow</button>}
+            <AlbumHeader album={state.album} items={items}>{!!items.length && <button className="button secondary" onClick={() => setSlideshowOpen(true)}><Play size={18} />Slideshow</button>}</AlbumHeader>
             {items.length ? <MediaGroups items={items} onOpen={setSelected} /> : <Empty title="No moments here yet" description="The album owner hasn't added photos or videos yet." />}
           </>
         : <Empty icon={Clock3} title={expired ? 'This link has expired' : 'This album is unavailable'} description={expired ? 'Ask the album owner for a new share link.' : 'Check your connection or ask the album owner for a new link.'}>

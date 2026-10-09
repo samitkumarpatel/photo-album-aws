@@ -161,3 +161,65 @@
 @media (max-width: 380px) { .ed-tabs button { font-size: 10px; } }
 
 .ed-brush {touch-action:none;cursor:crosshair}
+
+/* Keep the live preview in its own area; only the tools scroll. */
+.editor { height: var(--ed-viewport-height, 100dvh); }
+.editor[open] { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(0, min(calc(var(--ed-viewport-height, 100dvh) * .44), 340px)); }
+.ed-top { min-width: 0; z-index: 3; }
+.ed-stage { min-width: 0; min-height: 0; margin: 8px 12px 12px; overflow: hidden; }
+.ed-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; max-width: none; height: 100%; margin: 0; overflow: hidden; }
+.ed-tool { flex: 1 1 0; min-height: 0; justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 14px 0; scroll-padding: 12px; }
+.ed-tool > * { flex-shrink: 0; }
+.ed-text-tools, .ed-background-tools { max-height: none; overflow: visible; }
+.ed-text-tools { padding: 0 16px; }
+.ed-text-tools textarea { resize: none; }
+.ed-text-tools input:not([type=color]):not([type=range]), .ed-text-tools select { width: 100%; min-width: 0; min-height: 44px; background: var(--ed-bg); border: 1px solid var(--ed-line); border-radius: 8px; padding: 8px 10px; color: var(--ed-text); }
+.ed-tabs { flex: none; min-width: 0; overflow-x: auto; grid-template-columns: repeat(7, minmax(52px, 1fr)); }
+.ed-tabs button { min-height: 54px; font-size: 11px; }
+.ed-strip { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; }
+.ed-slider input { height: 44px; }
+@media (max-width: 379px) {
+  .ed-top { grid-template-columns: 1fr 1fr; gap: 0 8px; padding: max(4px, env(safe-area-inset-top)) 8px 4px; }
+  .ed-history { grid-row: 2; grid-column: 1 / -1; justify-content: center; }
+  .ed-save { grid-row: 1; grid-column: 2; }
+  .ed-primary { min-height: 44px; }
+}
+/* Desktop, tablets and phones in landscape: preview beside a fixed-width tool panel. */
+@media (min-width: 900px), (min-width: 640px) and (max-height: 540px) {
+  .editor[open] { grid-template-columns: minmax(0, 1fr) clamp(270px, 30vw, 360px); grid-template-rows: auto minmax(0, 1fr); }
+  .ed-top { grid-column: 1 / -1; }
+  .ed-stage { grid-column: 1; grid-row: 2; margin: 12px 20px 20px; }
+  .ed-panel { grid-column: 2; grid-row: 2; width: 100%; border: 0; border-left: 1px solid var(--ed-line); border-radius: 0; margin: 0; }
+  .ed-tool { padding: 20px 0; }
+  .ed-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: visible; }
+  .ed-tabs button { min-height: 56px; }
+  .ed-strip { flex-wrap: wrap; justify-content: flex-start; overflow: visible; padding: 4px 16px; gap: 8px; }
+  .ed-chip { width: 66px; }
+  .ed-background-actions { justify-content: flex-start; }
+  .ed-hint { text-align: left; line-height: 1.5; }
+}
+@media (max-height: 420px) and (min-width: 640px) {
+  .ed-top { padding: 4px 12px; }
+  .ed-tool { padding: 10px 0; }
+  .ed-tabs { grid-template-columns: repeat(7, minmax(44px, 1fr)); overflow-x: auto; }
+  .ed-tabs button { font-size: 9px; min-height: 48px; }
+}
+/* Give longer tool names room on phones; the strip scrolls instead of overlapping. */
+.ed-tabs { grid-template-columns: repeat(7, minmax(76px, 1fr)); }
+@media (min-width: 900px), (min-width: 640px) and (max-height: 540px) {
+  .ed-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-height: 420px) and (min-width: 640px) {
+  .ed-tabs { grid-template-columns: repeat(7, minmax(68px, 1fr)); }
+}
+
+.ed-background-actions label:focus-within { outline: 2px solid var(--ed-accent); outline-offset: 2px; }
+
+/* Narrow phone with the keyboard open: drop undo/redo and slim the tabs so the photo stays in view. */
+@media (max-width: 639px) and (max-height: 480px) {
+  .ed-top { grid-template-columns: 1fr 1fr; padding: max(2px, env(safe-area-inset-top)) 8px 2px; }
+  .ed-history { display: none; }
+  .ed-save { grid-row: 1; grid-column: 2; justify-self: end; }
+  .ed-tabs button { min-height: 44px; }
+  .ed-stage { margin: 4px 12px 6px; }
+}

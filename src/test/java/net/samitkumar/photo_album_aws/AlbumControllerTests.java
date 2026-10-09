@@ -254,11 +254,41 @@ class AlbumControllerTests {
         assertStatus(HttpStatus.BAD_REQUEST, () -> put(intent, "image/png", new byte[]{1, 2}));
         var query = UriComponentsBuilder.fromUriString(intent.uploadUrl()).build().getQueryParams();
         long expires = Long.parseLong(query.getFirst("expires"));
-        assertStatus(HttpStatus.FORBIDDEN, () -> uploads.upload(album.id(), intent.photoId(), expires, "forged", request("image/png", new byte[]{1, 2, 3})));
-        assertStatus(HttpStatus.FORBIDDEN, () -> uploads.upload(album.id(), intent.photoId(), expires + 60, query.getFirst("signature"), request("image/png", new byte[]{1, 2, 3})));
+        assertStatus(HttpStatus.FORBIDDEN, () -> uploads.upload(album.id(), intent.photoId(), expires, "forged", null, null, null, request("image/png", new byte[]{1, 2, 3})));
+        assertStatus(HttpStatus.FORBIDDEN, () -> uploads.upload(album.id(), intent.photoId(), expires + 60, query.getFirst("signature"), null, null, null, request("image/png", new byte[]{1, 2, 3})));
         assertTrue(storage.size(stored(album.id(), intent.photoId()).objectKey()).isEmpty());
         assertTrue(uploadSigner.verify(album.id(), intent.photoId(), stored(album.id(), intent.photoId()).objectKey(), "image/png", 3, expires, query.getFirst("signature")));
         assertFalse(uploadSigner.verify(album.id(), intent.photoId(), stored(album.id(), intent.photoId()).objectKey(), "image/png", 3, Instant.now().minusSeconds(1).getEpochSecond(), query.getFirst("signature")));
+    }
+
+    @Test
+    void localReplacementUploadStagesThenPromotesAnEditedVersion() throws IOException {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var photo = controller.uploadPhoto(album.id(), new MockMultipartFile("file", "a.png", "image/png", new byte[]{1}));
+        repository.replacePhoto(album.id(), stored(album.id(), photo.id()).withStatus(PhotoStatus.READY));
+        var request = new CreateUpload("edited.jpg", "image/jpeg", 3L);
+        var intent = controller.createReplacementUpload(album.id(), photo.id(), request);
+
+        assertStatus(HttpStatus.BAD_REQUEST, () -> put(intent.uploadUrl(), "image/png", new byte[]{4, 5, 6}));
+        assertStatus(HttpStatus.BAD_REQUEST, () -> put(intent.uploadUrl(), "image/jpeg", new byte[]{4, 5}));
+        var forgedUrl = intent.uploadUrl().replace("size=3", "size=2");
+        assertStatus(HttpStatus.FORBIDDEN, () -> put(forgedUrl, "image/jpeg", new byte[]{4, 5}));
+        put(intent.uploadUrl(), "image/jpeg", new byte[]{4, 5, 6});
+        var encodedKey = UriComponentsBuilder.fromUriString(intent.uploadUrl()).build().getQueryParams().getFirst("objectKey");
+        var stagedKey = java.net.URLDecoder.decode(encodedKey, java.nio.charset.StandardCharsets.UTF_8);
+        assertArrayEquals(new byte[]{4, 5, 6}, storage.open(stagedKey).readAllBytes());
+        assertArrayEquals(new byte[]{1}, storage.open(stored(album.id(), photo.id()).objectKey()).readAllBytes());
+        assertEquals(1, PhotoHistory.version(stored(album.id(), photo.id())));
+        assertEquals(List.of(photo.id()), processed);
+
+        var completed = controller.completeReplacementUpload(album.id(), photo.id(), intent.uploadId(), intent.version(), request);
+        assertEquals(2, completed.version());
+        assertEquals(PhotoStatus.PROCESSING, completed.status());
+        assertArrayEquals(new byte[]{4, 5, 6}, storage.open(stored(album.id(), photo.id()).objectKey()).readAllBytes());
+        assertArrayEquals(new byte[]{1}, storage.open("originals/" + album.id() + "/" + photo.id() + "/v1.png").readAllBytes());
+        assertTrue(storage.size(stagedKey).isEmpty());
+        assertEquals(List.of(photo.id(), photo.id()), processed);
+        assertStatus(HttpStatus.CONFLICT, () -> controller.completeReplacementUpload(album.id(), photo.id(), intent.uploadId(), intent.version(), request));
     }
 
     @Test
@@ -434,10 +464,21 @@ class AlbumControllerTests {
     /* ---------- helpers ---------- */
 
     private void put(AlbumController.UploadIntent intent, String contentType, byte[] bytes) throws IOException {
-        var uri = UriComponentsBuilder.fromUriString(intent.uploadUrl()).build();
+        put(intent.uploadUrl(), contentType, bytes);
+    }
+
+    private void put(String uploadUrl, String contentType, byte[] bytes) throws IOException {
+        var uri = UriComponentsBuilder.fromUriString(uploadUrl).build();
         var segments = uri.getPathSegments();
+        var query = uri.getQueryParams();
+        String key = query.getFirst("objectKey");
+        String type = query.getFirst("contentType");
+        String size = query.getFirst("size");
         uploads.upload(UUID.fromString(segments.get(2)), UUID.fromString(segments.get(3)),
-                Long.parseLong(uri.getQueryParams().getFirst("expires")), uri.getQueryParams().getFirst("signature"), request(contentType, bytes));
+                Long.parseLong(query.getFirst("expires")), query.getFirst("signature"),
+                key == null ? null : java.net.URLDecoder.decode(key, java.nio.charset.StandardCharsets.UTF_8),
+                type == null ? null : java.net.URLDecoder.decode(type, java.nio.charset.StandardCharsets.UTF_8),
+                size == null ? null : Long.valueOf(size), request(contentType, bytes));
     }
 
     private static MockHttpServletRequest request(String contentType, byte[] bytes) {

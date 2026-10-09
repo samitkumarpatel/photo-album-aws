@@ -1,6 +1,6 @@
 output "api_url" {
-  description = "Public URL of the API function."
-  value       = module.photo_album.function_urls["photo-album-prod-api"]
+  description = "Base URL of the API Gateway HTTP API."
+  value       = module.photo_album.api_url
 }
 
 output "media_bucket" {

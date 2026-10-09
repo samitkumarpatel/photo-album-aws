@@ -1,9 +1,53 @@
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 resource "aws_iam_openid_connect_provider" "github" {
+  count          = var.create_oidc_provider ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
+
   tags = {
     Environment = "github-actions"
   }
+}
+
+data "aws_iam_openid_connect_provider" "github" {
+  count = var.create_oidc_provider ? 0 : 1
+  url   = "https://token.actions.githubusercontent.com"
+}
+
+locals {
+  oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
+
+  project_prefixes = toset([
+    for repo in var.repos : trimsuffix(split("/", repo)[1], "-aws")
+  ])
+
+  trusted_subjects = flatten([
+    for repo in var.repos : flatten([
+      [for environment in var.environments : "repo:${repo}:environment:${environment}"],
+      [for environment in var.environments : "repo:${split("/", repo)[0]}@*/${split("/", repo)[1]}@*:environment:${environment}"],
+    ])
+  ])
+
+  ecr_resources = flatten([
+    for project_prefix in local.project_prefixes : [
+      for environment in var.environments :
+      "arn:aws:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${project_prefix}-${environment}-*"
+    ]
+  ])
+
+  lambda_resources = flatten([
+    for project_prefix in local.project_prefixes : [
+      for environment in var.environments :
+      "arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${project_prefix}-${environment}-*"
+    ]
+  ])
+
+  frontend_bucket_names = flatten([
+    for project_prefix in local.project_prefixes : [
+      for environment in var.environments : "${project_prefix}-${environment}-${data.aws_caller_identity.current.account_id}-frontend"
+    ]
+  ])
 }
 
 data "aws_iam_policy_document" "assume_role" {
@@ -13,7 +57,7 @@ data "aws_iam_policy_document" "assume_role" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [local.oidc_provider_arn]
     }
 
     condition {
@@ -23,25 +67,27 @@ data "aws_iam_policy_document" "assume_role" {
     }
 
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        for environment in var.environment_names :
-        "repo:${var.repository_owner}@${var.repository_owner_id}/${var.repository_name}@${var.repository_id}:environment:${environment}"
-      ]
+      values   = local.trusted_subjects
     }
   }
 }
 
-resource "aws_iam_role" "github_deploy" {
+resource "aws_iam_role" "this" {
   name               = var.name
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
   tags = {
-    Environment = "github-actions"
+    Environment  = "github-actions"
+    Repositories = join(",", sort(tolist(var.repos)))
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
-data "aws_iam_policy_document" "deploy_permissions" {
+data "aws_iam_policy_document" "deploy" {
   statement {
     sid       = "EcrAuthorization"
     actions   = ["ecr:GetAuthorizationToken"]
@@ -58,10 +104,7 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "ecr:PutImage",
       "ecr:UploadLayerPart",
     ]
-    resources = [
-      for environment in var.environment_names :
-      "arn:aws:ecr:${var.region}:${var.account_id}:repository/photo-album-${environment}-*"
-    ]
+    resources = local.ecr_resources
   }
 
   statement {
@@ -71,15 +114,37 @@ data "aws_iam_policy_document" "deploy_permissions" {
       "lambda:GetFunctionConfiguration",
       "lambda:UpdateFunctionCode",
     ]
-    resources = [
-      for environment in var.environment_names :
-      "arn:aws:lambda:${var.region}:${var.account_id}:function:photo-album-${environment}-*"
+    resources = local.lambda_resources
+  }
+
+  statement {
+    sid = "ListFrontendBuckets"
+    actions = [
+      "s3:GetBucketLocation",
+      "s3:ListBucket",
     ]
+    resources = [for bucket in local.frontend_bucket_names : "arn:aws:s3:::${bucket}"]
+  }
+
+  statement {
+    sid = "DeployFrontendFiles"
+    actions = [
+      "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:PutObject",
+    ]
+    resources = [for bucket in local.frontend_bucket_names : "arn:aws:s3:::${bucket}/*"]
+  }
+
+  statement {
+    sid       = "InvalidateFrontendDistributions"
+    actions   = ["cloudfront:CreateInvalidation"]
+    resources = ["arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/*"]
   }
 }
 
-resource "aws_iam_role_policy" "deploy_permissions" {
-  name   = "photo-album-lambda-deploy"
-  role   = aws_iam_role.github_deploy.id
-  policy = data.aws_iam_policy_document.deploy_permissions.json
+resource "aws_iam_role_policy" "deploy" {
+  name   = "deploy"
+  role   = aws_iam_role.this.id
+  policy = data.aws_iam_policy_document.deploy.json
 }

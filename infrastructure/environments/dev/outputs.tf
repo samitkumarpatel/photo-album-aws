@@ -1,6 +1,19 @@
 output "api_url" {
-  description = "Public URL of the API function."
-  value       = module.photo_album.function_urls["photo-album-dev-api"]
+  description = "Base URL of the API Gateway HTTP API."
+  value       = module.photo_album.api_url
+}
+
+output "frontend_sites" {
+  description = "Frontend bucket, CloudFront, and URL details keyed by site name."
+  value = {
+    for name, site in module.frontend : name => {
+      bucket_name       = site.bucket_name
+      distribution_id   = site.distribution_id
+      distribution_host = site.distribution_domain_name
+      site_url          = site.site_url
+      certificate_arn   = site.certificate_arn
+    }
+  }
 }
 
 output "media_bucket" {

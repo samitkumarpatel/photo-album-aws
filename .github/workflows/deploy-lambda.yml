@@ -3,8 +3,14 @@ name: Build and deploy Lambda container image
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "frontend/**"
+      - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
     inputs:
       target_environment:
@@ -83,7 +89,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::257222191091:role/photo-album-github-actions-deploy
+          role-to-assume: arn:aws:iam::257222191091:role/samitkumarpatel_photo-album-aws
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Amazon ECR
@@ -132,7 +138,7 @@ jobs:
       - name: Assume AWS deploy role with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::257222191091:role/photo-album-github-actions-deploy
+          role-to-assume: arn:aws:iam::257222191091:role/samitkumarpatel_photo-album-aws
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy API Lambda
@@ -163,7 +169,7 @@ jobs:
       - name: Assume AWS deploy role with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::257222191091:role/photo-album-github-actions-deploy
+          role-to-assume: arn:aws:iam::257222191091:role/samitkumarpatel_photo-album-aws
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy worker Lambda

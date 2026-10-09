@@ -47,7 +47,7 @@ resource "aws_ecr_repository_policy" "this" {
 resource "terraform_data" "bootstrap_image" {
   for_each = var.lambda
 
-  triggers_replace = [aws_ecr_repository.this[each.key].repository_url, each.value.source_image, each.value.source_image_tag, each.value.architecture]
+  triggers_replace = [aws_ecr_repository.this[each.key].repository_url, local.lambda_seed_images[each.key].source_image, local.lambda_seed_images[each.key].source_image_tag, each.value.architecture]
 
   provisioner "local-exec" {
     command = <<-EOT
@@ -75,8 +75,8 @@ resource "terraform_data" "bootstrap_image" {
       REGION     = local.region
       REPOSITORY = aws_ecr_repository.this[each.key].name
       ARCH       = each.value.architecture == "x86_64" ? "amd64" : "arm64"
-      SOURCE     = each.value.source_image
-      TARGET     = "${aws_ecr_repository.this[each.key].repository_url}:${each.value.source_image_tag}"
+      SOURCE     = local.lambda_seed_images[each.key].source_image
+      TARGET     = "${aws_ecr_repository.this[each.key].repository_url}:${local.lambda_seed_images[each.key].source_image_tag}"
     }
   }
 }
@@ -165,7 +165,7 @@ resource "aws_lambda_function" "this" {
   function_name = each.key
   role          = aws_iam_role.lambda.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.this[each.key].repository_url}:${each.value.source_image_tag}"
+  image_uri     = "${aws_ecr_repository.this[each.key].repository_url}:${local.lambda_seed_images[each.key].source_image_tag}"
   architectures = [each.value.architecture]
   memory_size   = each.value.memory
   timeout       = each.value.timeout
@@ -204,35 +204,37 @@ resource "aws_lambda_event_source_mapping" "sqs" {
   function_response_types = ["ReportBatchItemFailures"] # retry only the messages that failed
 }
 
-# ---- Public URLs ----
+# ---- HTTP API ----
 locals {
-  public_functions = { for name, f in var.lambda : name => f if f.public_url }
+  http_integrations = merge({}, [
+    for function_name, function in var.lambda : merge(
+      {
+        for public_path, lambda_path in function.http_router : "ANY ${public_path}" => {
+          lambda_invoke_arn    = aws_lambda_function.this[function_name].invoke_arn
+          lambda_function_name = function_name
+          path_rewrite         = lambda_path
+        }
+      },
+      {
+        for public_path, lambda_path in function.http_router : "ANY ${public_path}/{proxy+}" => {
+          lambda_invoke_arn    = aws_lambda_function.this[function_name].invoke_arn
+          lambda_function_name = function_name
+          proxy_path_rewrite   = "${lambda_path}/$${request.path.proxy}"
+        }
+      }
+    )
+  ]...)
 }
 
-resource "aws_lambda_function_url" "this" {
-  for_each = local.public_functions
+module "api_gateway_http" {
+  source = "../../../modules/api_gateway_http/0.0.1"
 
-  function_name      = aws_lambda_function.this[each.key].function_name
-  authorization_type = "NONE"
-}
-
-# A public function URL needs both permissions.
-resource "aws_lambda_permission" "url" {
-  for_each = local.public_functions
-
-  statement_id           = "AllowPublicFunctionUrl"
-  action                 = "lambda:InvokeFunctionUrl"
-  function_name          = aws_lambda_function.this[each.key].function_name
-  principal              = "*"
-  function_url_auth_type = "NONE"
-}
-
-resource "aws_lambda_permission" "url_invoke" {
-  for_each = local.public_functions
-
-  statement_id             = "AllowPublicInvokeViaFunctionUrl"
-  action                   = "lambda:InvokeFunction"
-  function_name            = aws_lambda_function.this[each.key].function_name
-  principal                = "*"
-  invoked_via_function_url = true
+  name               = "${var.name}-http"
+  integrations       = local.http_integrations
+  cors_allow_origins = var.api_cors_allow_origins
+  enable_access_logs = var.api_enable_access_logs
+  log_retention_days = var.api_log_retention_days
+  route_throttling   = var.api_route_throttling
+  domain_name        = var.api_domain_name
+  certificate_arn    = var.api_certificate_arn
 }

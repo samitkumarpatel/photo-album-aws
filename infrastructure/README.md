@@ -7,18 +7,20 @@ Terraform provisions the application as one reusable stack per environment. Each
 ```text
 infrastructure/
   stacks/backend/1.0.0/     versioned, self-contained application backend stack
-  environments/dev/         dev inputs/state; also owns the account-level GitHub OIDC stack
+  stacks/frontend/1.0.0/   per-site private S3 and CloudFront stack, with optional ACM custom domain
+  stacks/github-actions/1.0.0/ per-repository GitHub Actions deploy role
+  modules/api_gateway_http/0.0.1/ shared HTTP API Gateway with routing, logs, CORS, throttling, and optional custom domains
+  environments/dev/         dev inputs/state; calls the account-level GitHub OIDC provider stack
   environments/prod/        prod inputs and separate state; pins stack version 1.0.0
-  stacks/github-actions/1.0.0/ reusable account-level GitHub OIDC deploy stack
 ```
 
-The stack version is part of its source path. Environments stay pinned to a version until deliberately updated; add a new version directory for incompatible or reviewed stack changes, then change each environment's `source` independently. The stack contains its Terraform resources directly, with no separate `modules/` tree.
+The stack version is part of its source path. Environments stay pinned to a version until deliberately updated; add a new version directory for incompatible or reviewed stack changes, then change each environment's `source` independently. Shared infrastructure components live under `modules/` and are called by the versioned stack.
 
-Each environment hardcodes `source_image`, `source_image_tag`, resource names, and application settings in `locals.lambda`, `locals.dynamodb`, and `locals.s3`, then passes those values to the same stack. `lambda` is keyed by function name; `dynamodb` by table name; and `s3` is a list of bucket names. SQS is configured separately because S3 event processing needs queue names and object key prefixes. Dev and prod can use different values without shared name aliases.
+Each environment configures Lambda resource names and application settings in `locals.lambda`, DynamoDB in `locals.dynamodb`, and bucket names in `locals.s3`, then passes those values to the same stack. `lambda` is keyed by function name; `dynamodb` by table name; and `s3` is a list of bucket names. SQS is configured separately because S3 event processing needs queue names and object key prefixes. Dev and prod can override the backend stack's default seed image or tag on an individual function when needed.
 
 ## Image bootstrap and release
 
-Lambda runs a Docker container image from ECR. The stack creates each ECR repository, copies its configured `source_image` to the configured `source_image_tag` when the repository is empty, and then creates Lambda from that ECR tag. The deploy host needs Terraform, AWS CLI, Docker with a running daemon, AWS credentials that can create the stack resources and push to its ECR repositories, and access to the source registry. For a private source registry, authenticate Docker to that registry before applying. The source image must match the configured Lambda architecture.
+Lambda runs a Docker container image from ECR. The stack defaults to `ghcr.io/samitkumarpatel/aws-lambda-fullstack:latest` and seeds it into the `latest` tag of each ECR repository when empty. A function can override either default with `source_image` or `source_image_tag`. Lambda is created from that ECR tag. The deploy host needs Terraform, AWS CLI, Docker with a running daemon, AWS credentials that can create the stack resources and push to its ECR repositories, and access to the source registry. For a private source registry, authenticate Docker to that registry before applying. The source image must match the configured Lambda architecture.
 
 Terraform checks the repository when the bootstrap step runs and seeds it only when it contains no images. The apply identity therefore needs `ecr:DescribeImages` in addition to permission to push images. After initial creation, the release pipeline owns Lambda image updates; Terraform ignores changes to `image_uri`. Push each release image to the environment's ECR repository and call `aws lambda update-function-code` with that image URI. Repository URLs are available from the `ecr_repositories` output.
 
@@ -26,7 +28,24 @@ Terraform checks the repository when the bootstrap step runs and seeds it only w
 
 `.github/workflows/deploy-lambda.yml` builds an `amd64` image from the repository Dockerfile. Pull requests build without publishing. Pushes to `main` publish to GHCR and both dev ECR repositories, then show separate **Deploy API Lambda** and **Deploy worker Lambda** jobs in GitHub Actions; both wait for the shared image build and can deploy in parallel. `workflow_dispatch` can deploy either dev or prod. ECR release images use the commit SHA; the lifecycle rule keeps the newest ten `sha-` images and preserves the bootstrap `latest` image.
 
-The account-level GitHub OIDC provider and deploy role are managed by the reusable `stacks/github-actions/1.0.0` module, called from `environments/dev/main.tf` alongside the dev application stack. Its repository and allowed GitHub Environment names are module inputs in that file. Keep the environment names aligned with the `dev` and `prod` environments used by the workflow. Only the dev Terraform root owns these account-wide IAM resources; do not add the module to prod, because AWS allows only one provider for this issuer in an account.
+Each `stacks/github-actions/1.0.0` module instance creates a role for one repository. The account-level OIDC provider is also managed inside this stack: set `create_oidc_provider = true` on exactly one repository instance and leave it false for the rest. Add repository slugs to the module's `for_each` set; role names are generated by replacing `/` with `_`, and each role's trust policy is restricted to its repository and configured GitHub Environments. ECR and Lambda permissions are scoped to resource names derived from the repository slug and environment. For example:
+
+```hcl
+module "github_oidc" {
+  source = "../../stacks/github-actions/1.0.0"
+  for_each = toset([
+    "samitkumarpatel/photo-album-aws",
+    "samitkumarpatel/photo-studio-aws",
+  ])
+
+  name         = replace(each.value, "/", "_")
+  repos        = [each.value]
+  environments = ["dev"]
+  create_oidc_provider = each.value == "samitkumarpatel/photo-album-aws"
+}
+```
+
+Keep environment names aligned with the GitHub Environments used by each repository's workflows. Only the dev Terraform root should own an instance with `create_oidc_provider = true`; AWS allows one provider for this issuer per account.
 
 Run the dev root with AWS credentials allowed to manage IAM. It uses the existing dev S3 state:
 
@@ -41,17 +60,17 @@ If the OIDC provider, role, and inline permissions policy are already in AWS but
 export AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
 terraform import \
-  module.github_actions.aws_iam_openid_connect_provider.github \
+  'module.github_oidc["samitkumarpatel/photo-album-aws"].aws_iam_openid_connect_provider.github[0]' \
   "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
 terraform import \
-  module.github_actions.aws_iam_role.github_deploy \
+  'module.github_oidc["samitkumarpatel/photo-album-aws"].aws_iam_role.this' \
   photo-album-github-actions-deploy
 terraform import \
-  module.github_actions.aws_iam_role_policy.deploy_permissions \
+  'module.github_oidc["samitkumarpatel/photo-album-aws"].aws_iam_role_policy.deploy' \
   photo-album-github-actions-deploy:photo-album-lambda-deploy
 ```
 
-Skip an import only when the resource does not exist in AWS or is already managed by the dev state. Review and apply the dev plan; Terraform will reconcile the trust policy and manage the role's inline ECR/Lambda deploy permissions:
+Skip an import only when the resource does not exist in AWS or is already managed by the dev state. The legacy role imports under its new address and Terraform will replace it with the generated repo-specific name. Review and apply the dev plan; Terraform will reconcile the trust policy and manage the role's inline ECR/Lambda deploy permissions:
 
 ```sh
 cd ../dev
@@ -59,7 +78,19 @@ terraform plan
 terraform apply
 ```
 
-GitHub switched repositories created after July 15, 2026 to immutable OIDC subjects that include the owner and repository IDs. This repository's subjects are `repo:samitkumarpatel@7632269/photo-album-aws@1407945617:environment:dev` and the same value ending in `environment:prod`; the stack inputs in `environments/dev/main.tf` construct these values. See [GitHub's OIDC reference](https://docs.github.com/en/actions/reference/security/oidc). The workflow assumes `arn:aws:iam::257222191091:role/photo-album-github-actions-deploy`. An `AccessDenied` from `AssumeRoleWithWebIdentity` means the provider, audience, repository IDs, or environment subject do not match. Configure required reviewers on GitHub's `prod` Environment if production deployments need approval.
+The OIDC trust policy matches this repository's owner/repository and the `dev` GitHub Environment in both legacy and immutable ID-qualified subject formats. The workflow assumes `arn:aws:iam::257222191091:role/samitkumarpatel_photo-album-aws`. An `AccessDenied` from `AssumeRoleWithWebIdentity` means the provider, audience, repository, or environment subject do not match. Add `prod` to the module's `environments` input when production deployments are ready.
+
+## API Gateway and Lambda router
+
+The backend stack creates one shared HTTP API Gateway. A Lambda can define `http_router` as a map from public path to the path handled by the Lambda, for example `http_router = { "/api" = "/router/api" }`. Terraform creates `ANY /api` and `ANY /api/{proxy+}` routes. The exact route forwards to `/router/api`; the proxy route appends the remaining path, so `/api/albums/1` reaches `/router/api/albums/1`. Query strings and request headers pass through the Lambda proxy integration.
+
+API Gateway access logs are enabled in dev and prod and retained for seven days. The stack also supports API level CORS, per route throttling, and a regional custom domain through the `api_*` inputs on the backend module. Set explicit CORS origins before enabling browser CORS; an empty list leaves CORS handling to the application. Custom domains require an ACM certificate in the API's AWS region. The `api_custom_domain_target` and `api_custom_domain_hosted_zone_id` outputs provide the DNS target details.
+
+## Frontend hosting
+
+The `stacks/frontend/1.0.0` stack creates a private S3 bucket and one CloudFront distribution per site name. The dev root calls it with `for_each = toset(["photo-album"])`. CloudFront serves frontend files from S3 and has `/api` and `/actuator` behaviors pointing to API Gateway. The frontend deployment workflow builds with `VITE_API_BASE_URL` set to the dev API Gateway URL, uploads the files to S3, and invalidates CloudFront. API Gateway CORS allows the frontend CloudFront origin. A CloudFront Function routes client-side frontend paths to `index.html`. The `frontend_sites` output gives the bucket name, distribution ID, hostname, site URL, and optional certificate ARN for each site.
+
+Custom domains are optional. Set `domain_name` and `route53_zone_id` on a site module instance to create an ACM certificate in `us-east-1`, add DNS validation and CloudFront alias records, and attach the certificate to the distribution. Leave both unset to use the default CloudFront hostname without ACM.
 
 ## Resources and permissions
 
@@ -82,4 +113,4 @@ terraform output api_url
 
 Use `infrastructure/environments/prod` for production. Configure a remote backend for prod before using it from a team or CI. Keep production state and AWS credentials isolated from dev.
 
-The API Function URL is public and unauthenticated at the AWS layer; application authentication remains responsible for protecting API operations. S3 bucket names are globally unique. Terraform cannot delete a bucket that still contains objects, and prod DynamoDB deletion protection must be disabled deliberately before table destruction.
+The API Gateway endpoint is public and unauthenticated at the AWS layer; application authentication remains responsible for protecting API operations. S3 bucket names are globally unique. Terraform cannot delete a bucket that still contains objects, and prod DynamoDB deletion protection must be disabled deliberately before table destruction.

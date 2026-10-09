@@ -1,6 +1,16 @@
-output "function_urls" {
-  description = "Public URL of each function with public_url = true."
-  value       = { for name, u in aws_lambda_function_url.this : name => u.function_url }
+output "api_url" {
+  description = "Base URL of the shared API Gateway HTTP API."
+  value       = module.api_gateway_http.api_endpoint
+}
+
+output "api_custom_domain_target" {
+  description = "Regional DNS target for the optional API custom domain."
+  value       = module.api_gateway_http.custom_domain_target
+}
+
+output "api_custom_domain_hosted_zone_id" {
+  description = "Regional hosted zone ID for the optional API custom domain."
+  value       = module.api_gateway_http.custom_domain_hosted_zone_id
 }
 
 output "functions" {

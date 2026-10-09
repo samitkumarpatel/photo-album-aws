@@ -7,13 +7,14 @@ locals {
 
   lambda = {
     "photo-album-prod-api" = {
-      source_image     = "ghcr.io/samitkumarpatel/aws-lambda-fullstack:latest"
-      source_image_tag = "latest"
-      architecture     = "x86_64"
-      memory           = 2048
-      timeout          = 30
-      public_url       = true
-      force_delete     = false
+      architecture = "x86_64"
+      memory       = 2048
+      timeout      = 30
+      http_router = {
+        "/api"      = "/api"
+        "/actuator" = "/actuator"
+      }
+      force_delete = false
       environment = {
         PHOTO_ALBUM_DATA_MODE       = "dynamodb"
         PHOTO_ALBUM_TABLE           = "photo-album-prod"
@@ -24,14 +25,12 @@ locals {
       }
     }
     "photo-album-prod-worker" = {
-      source_image     = "ghcr.io/samitkumarpatel/aws-lambda-fullstack:latest"
-      source_image_tag = "latest"
-      architecture     = "x86_64"
-      handler          = "net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"
-      memory           = 2048
-      timeout          = 120
-      sqs_trigger      = "photo-album-prod-processing"
-      force_delete     = false
+      architecture = "x86_64"
+      handler      = "net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"
+      memory       = 2048
+      timeout      = 120
+      sqs_trigger  = "photo-album-prod-processing"
+      force_delete = false
       environment = {
         PHOTO_ALBUM_DATA_MODE       = "dynamodb"
         PHOTO_ALBUM_TABLE           = "photo-album-prod"
@@ -60,10 +59,11 @@ locals {
 module "photo_album" {
   source = "../../stacks/backend/1.0.0"
 
-  name     = "photo-album-prod"
-  lambda   = local.lambda
-  dynamodb = local.dynamodb
-  s3       = local.s3
+  name                   = "photo-album-prod"
+  lambda                 = local.lambda
+  dynamodb               = local.dynamodb
+  s3                     = local.s3
+  api_enable_access_logs = true
   sqs = [
     {
       name      = "photo-album-prod-processing"

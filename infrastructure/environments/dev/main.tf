@@ -7,12 +7,13 @@ locals {
 
   lambda = {
     "photo-album-dev-api" = {
-      source_image     = "ghcr.io/samitkumarpatel/aws-lambda-fullstack:latest"
-      source_image_tag = "latest"
-      architecture     = "x86_64"
-      memory           = 2048
-      timeout          = 30
-      public_url       = true
+      architecture = "x86_64"
+      memory       = 2048
+      timeout      = 30
+      http_router = {
+        "/api"      = "/api"
+        "/actuator" = "/actuator"
+      }
       environment = {
         PHOTO_ALBUM_DATA_MODE       = "dynamodb"
         PHOTO_ALBUM_TABLE           = "photo-album-dev"
@@ -23,13 +24,11 @@ locals {
       }
     }
     "photo-album-dev-worker" = {
-      source_image     = "ghcr.io/samitkumarpatel/aws-lambda-fullstack:latest"
-      source_image_tag = "latest"
-      architecture     = "x86_64"
-      handler          = "net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"
-      memory           = 2048
-      timeout          = 120
-      sqs_trigger      = "photo-album-dev-processing"
+      architecture = "x86_64"
+      handler      = "net.samitkumar.photo_album_aws.processing.S3EventWorkerHandler::handleRequest"
+      memory       = 2048
+      timeout      = 120
+      sqs_trigger  = "photo-album-dev-processing"
       environment = {
         PHOTO_ALBUM_DATA_MODE       = "dynamodb"
         PHOTO_ALBUM_TABLE           = "photo-album-dev"
@@ -58,10 +57,12 @@ locals {
 module "photo_album" {
   source = "../../stacks/backend/1.0.0"
 
-  name     = "photo-album-dev"
-  lambda   = local.lambda
-  dynamodb = local.dynamodb
-  s3       = local.s3
+  name                   = "photo-album-dev"
+  lambda                 = local.lambda
+  dynamodb               = local.dynamodb
+  s3                     = local.s3
+  api_cors_allow_origins = ["https://d38gufr7jg1s4v.cloudfront.net"]
+  api_enable_access_logs = true
   sqs = [
     {
       name      = "photo-album-dev-processing"
@@ -71,17 +72,34 @@ module "photo_album" {
   ]
 }
 
-# The GitHub OIDC provider is account-wide. Keep its ownership in one state
-# only; this shared role trusts the dev and prod GitHub Environments.
-module "github_actions" {
-  source = "../../stacks/github-actions/1.0.0"
+module "frontend" {
+  source = "../../stacks/frontend/1.0.0"
+  for_each = toset([
+    "photo-album",
+  ])
 
-  name                = "photo-album-github-actions-deploy"
-  repository_owner    = "samitkumarpatel"
-  repository_owner_id = "7632269"
-  repository_name     = "photo-album-aws"
-  repository_id       = "1407945617"
-  environment_names   = ["dev", "prod"]
-  account_id          = data.aws_caller_identity.current.account_id
-  region              = local.region
+  name        = each.value
+  environment = local.environment
+  api_url     = module.photo_album.api_url
+
+  # Set both values to enable an ACM certificate, DNS validation, and a custom domain.
+  domain_name     = null
+  route53_zone_id = null
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+}
+
+module "github_oidc" {
+  source = "../../stacks/github-actions/1.0.0"
+  for_each = toset([
+    "samitkumarpatel/photo-album-aws",
+  ])
+
+  name                 = replace(each.value, "/", "_")
+  repos                = [each.value]
+  environments         = ["dev"]
+  create_oidc_provider = each.value == "samitkumarpatel/photo-album-aws"
 }

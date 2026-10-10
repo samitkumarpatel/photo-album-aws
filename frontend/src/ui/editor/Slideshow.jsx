@@ -18,7 +18,7 @@ export default function Slideshow({ items, presentation, Dialog, close }) {
   if (!current) return null
   return <Dialog title={presentation?.brandName || 'Slideshow'} close={close} wide><div className={'slideshow album-theme-' + (presentation?.theme || 'classic')}>
     {presentation?.logo && <img className="slideshow-logo" src={presentation.logo} alt="Brand logo" />}
-    {isVideo(current) ? <video ref={video} key={current.id} src={mediaUrl(current, 'original')} controls autoPlay={playing} onEnded={() => { if (playing) next() }} onError={() => setPlaying(false)} /> : <img key={current.id} src={mediaUrl(current, 'display')} alt={current.filename} onError={() => setPlaying(false)} />}
+    {isVideo(current) ? <video ref={video} key={current.id} src={mediaUrl(current, 'original')} controls playsInline autoPlay={playing} onEnded={() => { if (playing) next() }} onError={() => setPlaying(false)} /> : <img key={current.id} src={mediaUrl(current, 'display')} alt={current.filename} onError={() => setPlaying(false)} />}
     {presentation?.watermark && <span className="slideshow-watermark">{presentation.watermark}</span>}
   </div><div className="dialog-actions"><button className="button secondary" onClick={() => setIndex(i => (i + items.length - 1) % items.length)}>Previous</button><button className="button secondary" onClick={() => setPlaying(p => !p)}>{playing ? 'Pause' : 'Play'}</button><span role="status">{index + 1} / {items.length}</span><button className="button secondary" onClick={next}>Next</button></div></Dialog>
 }

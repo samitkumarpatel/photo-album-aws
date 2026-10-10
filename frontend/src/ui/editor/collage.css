@@ -72,11 +72,17 @@
 
 /* Phones held sideways: preview pinned on the left, settings scroll on the right. */
 @media (max-height: 540px) and (min-width: 640px) {
-  .dialog-wide:has(.collage-preview canvas) { width: min(980px, calc(100% - 24px)); max-height: 96dvh; }
-  .dialog:has(.collage-preview canvas) .dialog-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); column-gap: 20px; align-items: start; max-height: 96dvh; padding-top: 12px; scroll-padding-top: 12px; }
+  .dialog-wide:has(.collage-preview canvas) { width: min(980px, calc(100% - 24px)); max-height: calc(var(--dialog-viewport-height, 100dvh) * .96); }
+  .dialog:has(.collage-preview canvas) .dialog-body { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); column-gap: 20px; align-items: start; max-height: calc(var(--dialog-viewport-height, 100dvh) * .96); padding-top: 12px; scroll-padding-top: 12px; }
   .dialog:has(.collage-preview canvas) .dialog-body > * { grid-column: 2; }
   .dialog:has(.collage-preview canvas) .dialog-description { display: none; }
   .dialog:has(.collage-preview canvas) .dialog-heading h2 { font-size: 20px; }
-  .dialog:has(.collage-preview canvas) .dialog-body > .collage-preview { grid-column: 1; grid-row: 1 / span 30; top: 0; max-height: calc(96dvh - 32px); height: calc(96dvh - 32px); margin: 0; }
-  .dialog:has(.collage-preview canvas) .collage-preview canvas { max-height: calc(96dvh - 76px); }
+  .dialog:has(.collage-preview canvas) .dialog-body > .collage-preview { grid-column: 1; grid-row: 1 / span 30; top: 0; max-height: calc(var(--dialog-viewport-height, 100dvh) * .96 - 32px); height: calc(var(--dialog-viewport-height, 100dvh) * .96 - 32px); margin: 0; }
+  .dialog:has(.collage-preview canvas) .collage-preview canvas { max-height: calc(var(--dialog-viewport-height, 100dvh) * .96 - 76px); }
+}
+
+@media (max-width: 599px) {
+  .slideshow { height: min(48dvh, calc(var(--dialog-viewport-height, 100dvh) * .5)); border-radius: 12px; }
+  .slideshow-watermark { max-width: calc(100% - 32px); right: 16px; overflow-wrap: anywhere; }
+  .version-row strong, .version-row span { min-width: 0; overflow-wrap: anywhere; }
 }

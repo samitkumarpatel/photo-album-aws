@@ -107,14 +107,30 @@ function Menu({ label, icon, items, align = 'right', className = 'icon-button' }
   const [open, setOpen] = useState(false)
   const root = useRef(null)
   const button = useRef(null)
+  const popover = useRef(null)
   useEffect(() => {
     if (!open) return
     const outside = e => { if (!root.current?.contains(e.target)) setOpen(false) }
-    const key = e => { if (e.key === 'Escape') { setOpen(false); button.current?.focus() } }
+    const key = e => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false); button.current?.focus() } }
     document.addEventListener('pointerdown', outside)
     document.addEventListener('keydown', key)
     root.current.querySelector('[role^="menuitem"]')?.focus()
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key) }
+    const position = () => {
+      const menu = popover.current
+      if (!menu || !root.current) return
+      const anchor = root.current.getBoundingClientRect(), bounds = menu.getBoundingClientRect()
+      const viewportTop = window.visualViewport?.offsetTop || 0
+      const viewportBottom = viewportTop + (window.visualViewport?.height || window.innerHeight)
+      const left = align === 'center' ? anchor.left + (anchor.width - bounds.width) / 2 : anchor.right - bounds.width
+      menu.style.translate = 'none'
+      menu.style.right = 'auto'
+      menu.style.left = Math.max(12, Math.min(left, window.innerWidth - bounds.width - 12)) - anchor.left + 'px'
+      menu.style.top = Math.max(viewportTop + 8, Math.min(anchor.bottom + 8, viewportBottom - bounds.height - 8)) - anchor.top + 'px'
+    }
+    position()
+    window.addEventListener('resize', position)
+    document.addEventListener('scroll', position, true)
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', position); document.removeEventListener('scroll', position, true) }
   }, [open])
   function arrows(e) {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -125,7 +141,7 @@ function Menu({ label, icon, items, align = 'right', className = 'icon-button' }
   }
   return <div className="menu" ref={root}>
     <button ref={button} className={className} aria-label={typeof label === 'string' ? label : undefined} title={typeof label === 'string' ? label : undefined} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}>{icon}</button>
-    {open && <div className={'menu-popover ' + align} role="menu" onKeyDown={arrows}>
+    {open && <div ref={popover} className={'menu-popover ' + align} role="menu" onKeyDown={arrows}>
       {items.map(item => <button key={item.key} role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked} className={(item.danger ? 'danger-item' : '') + (item.checked ? ' checked' : '')}
         onClick={() => { setOpen(false); item.onSelect() }}>
         {item.icon}<span>{item.label}</span>{item.checked && <Check size={16} className="menu-check" />}
@@ -596,6 +612,13 @@ function ThumbnailMedia({ item, src, quiet }) {
 }
 
 function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
+  const press = useRef(null)
+  const suppressClick = useRef(false)
+  const clearPress = () => {
+    if (press.current) clearTimeout(press.current.timer)
+    press.current = null
+  }
+  useEffect(() => () => clearPress(), [])
   const status = statusOf(item)
   const style = { '--i': Math.min(index, 12) }
   if (isBroken(item)) {
@@ -612,16 +635,33 @@ function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
   const state = status === 'UPLOADING' ? 'Uploading' : 'Processing'
   const selected = selection?.ids.has(item.id)
   const selectable = !!selection && status === 'READY'
+  const startPress = event => {
+    clearPress()
+    suppressClick.current = false
+    if (!selectable || selection.enabled || !event.isPrimary || event.button !== 0) return
+    const { clientX: x, clientY: y } = event
+    press.current = { x, y, timer: setTimeout(() => {
+      press.current = null
+      suppressClick.current = true
+      selection.select(item.id)
+    }, 550) }
+  }
+  const movePress = event => {
+    if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10) clearPress()
+  }
   const label = selection?.enabled ? (selected ? 'Deselect ' : 'Select ') + item.filename + (!selectable ? ' (not ready)' : '') : 'View ' + item.filename + (pending ? ' (' + state.toLowerCase() + ')' : '')
   return <div className={'media-tile' + (pending ? ' pending' : '') + (selected ? ' media-selected' : '') + (selection?.enabled ? ' selection-mode' : '')} style={style}>
     <button className="media-open" disabled={selection?.enabled ? !selectable : !open} aria-label={label} aria-pressed={selection?.enabled ? !!selected : undefined}
-      onClick={() => { if (selection?.enabled) { if (selectable) selection.toggle(item.id) } else if (open) onOpen(item) }}>
+      onPointerDown={startPress} onPointerMove={movePress} onPointerUp={clearPress} onPointerCancel={clearPress} onPointerLeave={clearPress}
+      onContextMenu={event => { if (press.current || suppressClick.current) event.preventDefault() }}
+      onDragStart={event => { clearPress(); event.preventDefault() }}
+      onClick={() => { if (suppressClick.current) { suppressClick.current = false; return } if (selection?.enabled) { if (selectable) selection.toggle(item.id) } else if (open) onOpen(item) }}>
       <Thumbnail item={item} />
       {pending && <span className="tile-status" aria-hidden="true"><CameraSpinner size={30} inherit decorative /><span>{state}…</span></span>}
       <span className="media-label">{item.filename}</span>
       {isCover && <span className="cover-badge"><Star size={12} fill="currentColor" aria-hidden="true" />Cover</span>}
     </button>
-    {selectable && <button className="tile-select" role="checkbox" aria-checked={!!selected} aria-label={'Select ' + item.filename} onClick={() => selection.select(item.id)}>
+    {selectable && selection.enabled && <button className="tile-select" role="checkbox" aria-checked={!!selected} aria-label={(selected ? 'Deselect ' : 'Select ') + item.filename} onClick={() => selection.select(item.id)}>
       <span className="selection-check" aria-hidden="true">{selected && <Check size={18} />}</span>
     </button>}
   </div>
@@ -797,7 +837,7 @@ function AlbumPage() {
       : state.album ? <>
           <AlbumHeader album={state.album} items={items} back={back}>
             <button className="button primary" onClick={() => uploadMedia(albumId)}><ImagePlus size={18} />Add photos</button>
-            <button className="button secondary" aria-label={activeShares(state.album).length ? "Manage album sharing" : "Share album"} onClick={() => setShareOpen(true)}><Share2 size={17} />Share</button>
+            <button className="button secondary" aria-label="Share album" aria-haspopup="dialog" onClick={() => setShareOpen(true)}><Share2 size={17} />Share</button>
             {!!items.filter(isViewable).length && <button className="button secondary album-slideshow" onClick={() => setSlideshowOpen(true)}><Play size={18} /><span>Slideshow</span></button>}
             <Menu label="Album options" className="button secondary round" align="right" icon={<Ellipsis size={20} />} items={[
               ...(items.some(isViewable) ? [{ key: 'slideshow', label: 'Slideshow', icon: <Play size={18} />, onSelect: () => setSlideshowOpen(true) }] : []),
@@ -835,14 +875,22 @@ function Dialog({ title, description, close, busy = false, children, wide = fals
     const overflow = document.documentElement.style.overflow
     document.documentElement.style.overflow = 'hidden'
     node.showModal()
-    node.querySelector('[data-autofocus]')?.focus()
+    node.focus()
+    if (window.matchMedia('(pointer: fine)').matches) node.querySelector('[data-autofocus]')?.focus()
     // When the on-screen keyboard shrinks the viewport, bring the field being typed in back into view.
-    const reveal = () => { const active = document.activeElement; if (node.contains(active) && active.matches('input, textarea, select')) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' })) }
+    const reveal = () => {
+      node.style.setProperty('--dialog-viewport-height', (window.visualViewport?.height || window.innerHeight) + 'px')
+      node.style.setProperty('--dialog-viewport-top', (window.visualViewport?.offsetTop || 0) + 'px')
+      const active = document.activeElement
+      if (node.contains(active) && active.matches('input, textarea, select')) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }))
+    }
     const viewport = window.visualViewport || window
+    reveal()
     viewport.addEventListener('resize', reveal)
-    return () => { viewport.removeEventListener('resize', reveal); node.close(); document.documentElement.style.overflow = overflow; if (previous?.isConnected) previous.focus() }
+    viewport.addEventListener('scroll', reveal)
+    return () => { viewport.removeEventListener('resize', reveal); viewport.removeEventListener('scroll', reveal); node.close(); document.documentElement.style.overflow = overflow; if (previous?.isConnected) previous.focus() }
   }, [])
-  return <dialog ref={ref} tabIndex={-1} className={'dialog' + (wide ? ' dialog-wide' : '')} aria-label={title}
+  return <dialog ref={ref} autoFocus tabIndex={-1} className={'dialog' + (wide ? ' dialog-wide' : '')} aria-label={title}
     onKeyDown={e => trapFocus(ref.current, e)}
     onCancel={e => { e.preventDefault(); if (!busy) close() }}
     onClick={e => { if (e.target === e.currentTarget && !busy) close() }}>
@@ -1163,118 +1211,183 @@ function DeleteDialog({ item, close, onDelete }) {
 const presets = [['HOURS', '1 hour'], ['DAYS', '1 day'], ['WEEKS', '1 week'], ['MONTHS', '1 month']]
 
 function SharingPage() {
-  const { albums, refresh, notify, loading } = useUI()
+  const { albums, refresh, notify, loading, error } = useUI()
   const [managing, setManaging] = useState(null)
   useSharingClock()
   const shared = albums.filter(a => activeShares(a).length)
   return <main id="main" className="page"><Hero title="Sharing" description="See active album links and manage their expiry or revoke access." />
-    {loading ? <PageLoader label="Loading sharing…" /> : !shared.length ? <Empty icon={Share2} title="No active share links" description="Your albums are private. Open an album to create a link." /> : shared.map(a => <section className="album-sharing" key={a.id}><Link to={'/albums/' + a.id}>{a.name}</Link><SharingBadge album={a} /><button className="button secondary" onClick={() => setManaging(a.id)}>Manage links</button></section>)}
+    {error && <ErrorNotice message={error} retry={refresh} />}
+    {loading ? <PageLoader label="Loading sharing…" /> : error && !albums.length ? null : !shared.length ? <Empty icon={Share2} title="No active share links" description="Your albums are private. Open an album to create a link." /> : shared.map(a => <section className="album-sharing" key={a.id}><Link to={'/albums/' + a.id}>{a.name}</Link><SharingBadge album={a} /><button className="button secondary" onClick={() => setManaging(a.id)}>Manage links</button></section>)}
     {managing && albums.find(a => a.id === managing) && <ShareDialog album={albums.find(a => a.id === managing)} close={() => setManaging(null)} notify={notify} onChanged={refresh} />}
   </main>
 }
 
-function ShareLinkSettings({ link, album, onSaved }) {
-  const localDate = iso => { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16) }
-  const [expiry, setExpiry] = useState(localDate(link.expiresAt)), [label, setLabel] = useState(link.label || '')
+const shareUrl = token => location.origin + '/share/' + token
+const localShareDate = iso => {
+  const date = new Date(iso)
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
+function ShareLinkSettings({ link, album, onSaved, disabled, onBusyChange }) {
+  const [expiry, setExpiry] = useState(localShareDate(link.expiresAt))
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
-  async function save(e) {
-    e.preventDefault(); setBusy(true); setError('')
-    try { await api('/api/albums/' + album.id + '/shares/' + link.token, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt: new Date(expiry).toISOString(), label }) }); await onSaved() }
-    catch (e) { setError(e.message) } finally { setBusy(false) }
+  const details = useRef(null)
+  const minimumExpiry = localShareDate(new Date((Math.floor(Date.now() / 60000) + 1) * 60000))
+  const [expiryDate = '', expiryClock = '00:00'] = expiry.split('T')
+  const [expiryHour = '00', expiryMinute = '00'] = expiryClock.split(':')
+  const timeParts = count => Array.from({ length: count }, (_, index) => String(index).padStart(2, '0'))
+  const unavailable = value => value < minimumExpiry || new Date(value).getTime() <= Date.now()
+  const changeExpiry = value => {
+    if (value && unavailable(value)) { setError('Choose an expiry in the future.'); return }
+    setExpiry(value); setError('')
   }
-  return <details><summary>Edit expiry & label</summary><form onSubmit={save}><label className="field">Label<input maxLength={90} value={label} onChange={e => setLabel(e.target.value)} /></label><label className="field">Expires at<input required type="datetime-local" value={expiry} onChange={e => setExpiry(e.target.value)} /></label>{error && <p role="alert">{error}</p>}<button className="button secondary" disabled={busy}>Save link settings</button></form></details>
+  const expiryTime = new Date(expiry).getTime()
+  const invalidExpiry = !Number.isFinite(expiryTime) || expiryTime <= Date.now()
+  useEffect(() => { setExpiry(localShareDate(link.expiresAt)) }, [link.expiresAt])
+  async function save(event) {
+    event.preventDefault()
+    const date = new Date(expiry)
+    if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) { setError('Choose an expiry in the future.'); return }
+    setBusy(true); onBusyChange(link.token); setError('')
+    try {
+      const updated = await api('/api/albums/' + album.id + '/shares/' + link.token, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt: date.toISOString(), label: link.label || '' }) })
+      await onSaved(updated)
+      if (details.current) details.current.open = false
+    } catch (error) { setError(error.message) }
+    finally { setBusy(false); onBusyChange(null) }
+  }
+  const unchanged = expiry === localShareDate(link.expiresAt)
+  return <details ref={details} className="share-settings"><summary><Pencil size={16} aria-hidden="true" />Edit expiry</summary>
+    <form onSubmit={save}><fieldset className="share-settings-fields" disabled={disabled || busy}>
+      <div className="share-expiry-row">
+      <label className="field">Date<input aria-label="Expiry date" required type="date" min={minimumExpiry.slice(0, 10)} value={expiryDate} onChange={event => {
+        const date = event.target.value
+        if (!date) { changeExpiry(''); return }
+        if (date < minimumExpiry.slice(0, 10)) { setError('Choose an expiry in the future.'); return }
+        const value = date + 'T' + expiryHour + ':' + expiryMinute
+        changeExpiry(unavailable(value) ? minimumExpiry : value)
+      }} /></label>
+      <fieldset className="share-expiry-time" disabled={!expiryDate}>
+        <legend className="sr-only">Expiry time · 24-hour</legend>
+        <label className="field">Hour<select required value={expiryHour} onChange={event => {
+          const hour = event.target.value
+          const minute = unavailable(expiryDate + 'T' + hour + ':' + expiryMinute)
+            ? timeParts(60).find(value => !unavailable(expiryDate + 'T' + hour + ':' + value)) : expiryMinute
+          if (minute !== undefined) changeExpiry(expiryDate + 'T' + hour + ':' + minute)
+        }}>{timeParts(24).map(hour => <option key={hour} value={hour} disabled={unavailable(expiryDate + 'T' + hour + ':59')}>{hour}</option>)}</select></label>
+        <label className="field">Minute<select required value={expiryMinute} onChange={event => changeExpiry(expiryDate + 'T' + expiryHour + ':' + event.target.value)}>
+          {timeParts(60).map(minute => <option key={minute} value={minute} disabled={unavailable(expiryDate + 'T' + expiryHour + ':' + minute)}>{minute}</option>)}
+        </select></label>
+      </fieldset>
+      </div>
+      <ErrorNotice message={error || (expiry && invalidExpiry ? 'Choose an expiry in the future.' : '')} />
+      <div className="dialog-actions">
+        <button type="button" className="button secondary" onClick={() => { setExpiry(localShareDate(link.expiresAt)); setError(''); details.current.open = false }}>Cancel</button>
+        <button className="button primary" disabled={unchanged || invalidExpiry}>{busy ? 'Saving…' : 'Save expiry'}</button>
+      </div>
+    </fieldset></form>
+  </details>
 }
 
 function ShareDialog({ album, close, notify, onChanged }) {
   useSharingClock()
-  const [label, setLabel] = useState('')
   const [amount, setAmount] = useState(1)
   const [unit, setUnit] = useState('WEEKS')
   const [custom, setCustom] = useState(false)
   const [share, setShare] = useState(null)
+  const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(null)
   const [links, setLinks] = useState(null)
+  const [linksLoading, setLinksLoading] = useState(true)
+  const [linksError, setLinksError] = useState('')
   const [revoking, setRevoking] = useState(null)
-  const linkInput = useRef(null)
-  const visibleLinks = (links || []).filter(l => new Date(l.expiresAt).getTime() > Date.now())
-  const link = share ? location.origin + '/share/' + share.token : ''
+  const [editing, setEditing] = useState(null)
+  const linkInputs = useRef(new Map())
+  const locked = busy || !!revoking || !!editing
+  const visibleLinks = (links || []).filter(link => new Date(link.expiresAt).getTime() > Date.now())
   const loadLinks = useCallback(async () => {
-    try { setLinks(await api('/api/albums/' + album.id + '/shares')) }
-    catch (e) { setError(e.message) }
+    setLinksLoading(true); setLinksError('')
+    try {
+      const loaded = await api('/api/albums/' + album.id + '/shares')
+      setLinks(loaded)
+      if (!loaded.some(link => new Date(link.expiresAt).getTime() > Date.now())) setCreating(true)
+    }
+    catch (error) { setLinksError(error.message) }
+    finally { setLinksLoading(false) }
   }, [album.id])
   useEffect(() => { loadLinks() }, [loadLinks])
-  async function create(e) {
-    e.preventDefault(); setBusy(true); setError('')
-    try { setShare(await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit, label }) })); setCopied(false); await loadLinks(); await onChanged?.() }
-    catch (e) { setError(e.message) }
+  async function create(event) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      const created = await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })
+      setShare(created); setCreating(false); setCopied(null)
+      setLinks(previous => [...(previous || []), created])
+      await onChanged?.()
+    } catch (error) { setError(error.message) }
     finally { setBusy(false) }
   }
   async function revoke(token) {
     setRevoking(token); setError('')
-    try { await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' }); setLinks(ls => (ls || []).filter(l => l.token !== token)); if (share?.token === token) { setShare(null); setCopied(false) }; notify('Link revoked'); await onChanged?.() }
-    catch (e) { setError(e.message) }
+    try {
+      await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' })
+      setLinks(previous => (previous || []).filter(link => link.token !== token))
+      if (share?.token === token) setShare(null)
+      if (visibleLinks.length === 1) setCreating(true)
+      setCopied(null); notify('Link revoked'); await onChanged?.()
+    } catch (error) { setError(error.message) }
     finally { setRevoking(null) }
   }
-  async function copy(value = link) {
-    try { await navigator.clipboard.writeText(value); if (value === link) setCopied(true); notify('Link copied') }
-    catch { linkInput.current?.focus(); linkInput.current?.select(); setError('Select the link and copy it manually.') }
+  async function copy(value, input) {
+    setError('')
+    try { await navigator.clipboard.writeText(value); setCopied(value); notify('Link copied') }
+    catch { input?.focus(); input?.select(); setError('Copy the selected link manually. Your browser could not access the clipboard.') }
   }
-  async function nativeShare() {
-    try { await navigator.share({ title: album.name, url: link }) }
-    catch (e) { if (e.name !== 'AbortError') setError('Could not open sharing. Copy the link instead.') }
+  async function saved(updated) {
+    setLinks(previous => (previous || []).map(link => link.token === updated.token ? updated : link))
+    setShare(previous => previous?.token === updated.token ? updated : previous)
+    notify('Link settings saved'); await onChanged?.()
   }
-  return <Dialog title={'Share “' + album.name + '”'} description="Anyone with the link can view this album. Revoke any link below to stop new visits. Media already opened may remain accessible for up to 5 minutes. Saved copies cannot be recalled." close={close} busy={busy || !!revoking}>
-    {links === null && !error && <p role="status">Loading sharing status…</p>}
-    {links !== null && visibleLinks.length === 0 && <p className="expiry-summary">Private album · No active share links</p>}
-    {!!visibleLinks.length && <div className="share-links">
-      <p className="field-label">Active links</p>
-      <ul>
-        {visibleLinks.map(l => <li key={l.token} className="share-link-row">
-          <strong>{l.label || 'Share link'}</strong>
-          <span><Clock3 size={14} />Expires {new Date(l.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
-          <a className="pill" href={location.origin + "/share/" + l.token} target="_blank" rel="noreferrer">Open link</a>
-          <button type="button" className="button secondary" onClick={() => copy(location.origin + '/share/' + l.token)}><Copy size={16} />Copy</button>
-          <button type="button" className="button secondary" aria-label="Revoke this link" disabled={!!revoking} onClick={() => revoke(l.token)}>
-            {revoking === l.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}Revoke
-          </button>
-          <ShareLinkSettings link={l} album={album} onSaved={async () => { await loadLinks(); await onChanged?.() }} />
-        </li>)}
-      </ul>
-    </div>}
-    {!share ? <form onSubmit={create}>
-      <label className="field">Link label<input maxLength={90} value={label} onChange={e => setLabel(e.target.value)} placeholder="Family, client, event…" /></label>
-      <p className="field-label" id="expiry-label">Link expires after</p>
-      <div className="chip-row" role="group" aria-labelledby="expiry-label">
-        {presets.map(([value, label]) => {
-          const on = !custom && Number(amount) === 1 && unit === value
-          return <button type="button" key={value} className={'chip' + (on ? ' selected' : '')} aria-pressed={on} onClick={() => { setCustom(false); setAmount(1); setUnit(value) }}>{label}</button>
-        })}
-        <button type="button" className={'chip' + (custom ? ' selected' : '')} aria-pressed={custom} onClick={() => setCustom(true)}>Custom</button>
-      </div>
-      {custom && <fieldset className="duration-field">
-        <legend className="visually-hidden">Custom duration</legend>
-        <label><span className="visually-hidden">Amount</span><input required type="number" min="1" max="365" value={amount} onChange={e => setAmount(e.target.value)} /></label>
-        <label><span className="visually-hidden">Unit</span><select value={unit} onChange={e => setUnit(e.target.value)}>{units.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-      </fieldset>}
-      <ErrorNotice message={error} />
-      <div className="dialog-actions">
-        <button type="button" className="button secondary" disabled={busy} onClick={close}>Cancel</button>
-        <button className="button primary" disabled={busy}>{busy ? <CameraSpinner size={20} inherit decorative /> : <Share2 size={18} />}{busy ? 'Creating…' : 'Create link'}</button>
-      </div>
-    </form> : <>
-      <div className="link-box">
-        <input ref={linkInput} value={link} readOnly onFocus={e => e.target.select()} aria-label="Share link" />
-        <button className="button primary" onClick={() => copy()}>{copied ? <Check size={18} /> : <Copy size={18} />}{copied ? 'Copied' : 'Copy'}</button>
-      </div>
-      <div className="expiry-summary"><Clock3 size={16} /><span>Expires {new Date(share.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
-      <ErrorNotice message={error} />
-      <div className="dialog-actions">
-        {typeof navigator.share === 'function' && <button className="button secondary" onClick={nativeShare}><Share2 size={18} />Send…</button>}
-        <button className="button secondary" onClick={close}>Done</button>
-      </div>
-    </>}
+  return <Dialog title="Share album" description={album.name} close={close} busy={locked} wide>
+    <ErrorNotice message={error} />
+    {creating && !share && <section className="share-create"><h3>Create a link</h3><form onSubmit={create}>
+      <fieldset className="share-settings-fields" disabled={locked}>
+        <p className="field-label" id="expiry-label">Link expires after</p>
+        <div className="chip-row" role="group" aria-labelledby="expiry-label">
+          {presets.map(([value, label]) => {
+            const selected = !custom && Number(amount) === 1 && unit === value
+            return <button type="button" key={value} className={'chip' + (selected ? ' selected' : '')} aria-pressed={selected} onClick={() => { setCustom(false); setAmount(1); setUnit(value) }}>{label}</button>
+          })}
+          <button type="button" className={'chip' + (custom ? ' selected' : '')} aria-pressed={custom} onClick={() => setCustom(true)}>Custom</button>
+        </div>
+        {custom && <fieldset className="duration-field"><legend className="visually-hidden">Custom duration</legend>
+          <label>Amount<input required type="number" inputMode="numeric" min="1" max="365" value={amount} onChange={event => setAmount(event.target.value)} /></label>
+          <label>Unit<select value={unit} onChange={event => setUnit(event.target.value)}>{units.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        </fieldset>}
+        <div className="dialog-actions"><button className="button primary" disabled={locked}>{busy ? <CameraSpinner size={20} inherit decorative /> : <Share2 size={18} />}{busy ? 'Creating…' : 'Create link'}</button></div>
+      </fieldset>
+    </form></section>}
+    <section className="share-links" aria-label="Active share links">
+      {linksLoading && <p className="share-loading" role="status"><CameraSpinner size={20} inherit decorative />Loading links…</p>}
+      <ErrorNotice message={linksError} retry={loadLinks} />
+      {!linksLoading && !linksError && !visibleLinks.length && <p className="dialog-description">No active links. This album is private.</p>}
+      {!!visibleLinks.length && <ul>{visibleLinks.map(link => {
+        const url = shareUrl(link.token), name = link.label || 'Share link'
+        return <li key={link.token} className={'share-link-row' + (share?.token === link.token ? ' share-link-new' : '')}>
+          <div className="share-link-url">
+            <input className="share-link-address" ref={input => { if (input) linkInputs.current.set(link.token, input); else linkInputs.current.delete(link.token) }} value={url} readOnly aria-label={'Link for ' + name} onFocus={event => event.target.select()} />
+            <button type="button" className="share-copy" disabled={locked} aria-label={copied === url ? 'Link copied' : 'Copy link'} title={copied === url ? 'Copied' : 'Copy link'} onClick={() => copy(url, linkInputs.current.get(link.token))}>{copied === url ? <Check size={20} aria-hidden="true" /> : <Copy size={20} aria-hidden="true" />}</button>
+          </div>
+          <button type="button" className="button secondary share-revoke" disabled={locked} onClick={() => revoke(link.token)}>{revoking === link.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}{revoking === link.token ? 'Revoking…' : 'Revoke'}</button>
+          <ShareLinkSettings link={link} album={album} disabled={locked} onBusyChange={setEditing} onSaved={saved} />
+        </li>
+      })}</ul>}
+    </section>
+    <div className="dialog-actions share-footer">
+      {!creating && <button className="button secondary" disabled={locked || linksLoading} onClick={() => { setShare(null); setCreating(true); setCopied(null); setError('') }}><Plus size={18} />New link</button>}
+      <button className="button secondary" disabled={locked} onClick={close}>Done</button>
+    </div>
   </Dialog>
 }
 
@@ -1526,14 +1639,20 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
       <button className="icon-button" aria-label="Close viewer" onClick={close}><X size={22} /></button>
       <div className="viewer-title"><strong>{current.filename}</strong><span>{date} · {index + 1} of {items.length}</span></div>
       <div className="viewer-actions">
-        {onCover && <button className={'icon-button' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
-        {onHistory && !video && <button className="icon-button" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
+        {onCover && <button className={'icon-button viewer-secondary-action' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
+        {onHistory && !video && <button className="icon-button viewer-secondary-action" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
         {onEdit && !video && <button className="icon-button" aria-label="Edit photo" title="Edit" onClick={onEdit}><SlidersHorizontal size={20} /></button>}
         {!video && <button className="icon-button hide-small" aria-label="Zoom in" title="Zoom in (+)" onClick={() => zoomBy(1.5)}><ZoomIn size={20} /></button>}
-        <a className="icon-button" href={current.urls?.download || originalSrc} download={current.filename} aria-label="Download original" title="Download original"
+        <a className="icon-button viewer-secondary-action" href={current.urls?.download || originalSrc} download={current.filename} aria-label="Download original" title="Download original"
           onClick={e => { e.preventDefault(); downloadOriginal(current).catch(() => window.open(originalSrc, '_blank', 'noopener')) }}><ArrowDownToLine size={20} /></a>
         <button className="icon-button" aria-label="Details" aria-pressed={details} onClick={() => setDetails(value => !value)}><Info size={20} /></button>
-        {onDelete && <button className="icon-button" aria-label="Delete item" onClick={onDelete}><Trash2 size={20} /></button>}
+        {onDelete && <button className="icon-button viewer-secondary-action" aria-label="Delete item" onClick={onDelete}><Trash2 size={20} /></button>}
+        <div className="viewer-mobile-menu"><Menu key={current.id} label="Photo options" icon={<Ellipsis size={22} />} items={[
+          ...(onCover ? [{ key: 'cover', label: isCover ? 'Album cover' : 'Set as album cover', icon: <Star size={18} />, checked: !!isCover, onSelect: () => { if (!isCover) onCover() } }] : []),
+          ...(onHistory && !video ? [{ key: 'history', label: 'Photo edit history', icon: <Clock3 size={18} />, onSelect: onHistory }] : []),
+          { key: 'download', label: 'Download original', icon: <ArrowDownToLine size={18} />, onSelect: () => downloadOriginal(current).catch(() => window.open(originalSrc, '_blank', 'noopener')) },
+          ...(onDelete ? [{ key: 'delete', label: 'Delete item', icon: <Trash2 size={18} />, danger: true, onSelect: onDelete }] : []),
+        ]} /></div>
       </div>
     </div>
     <div ref={stage} className={'viewer-stage' + (zoomed ? ' zoomed' : '')} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}>

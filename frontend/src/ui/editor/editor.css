@@ -224,3 +224,10 @@
   .ed-stage { margin: 4px 12px 6px; }
 }
 .ed-panel .scroll-hints { --hint-bg: #262626; --hint-fg: var(--ed-text); --hint-line: #3a3a3a; }
+
+@media (pointer: coarse) {
+  .ed-text-button, .ed-slider-head .ed-text-button, .ed-primary, .ed-ratio { min-height: 44px; }
+  .ed-handle { width: 44px; height: 44px; }
+  .ed-text-tools textarea, .ed-text-tools input, .ed-text-tools select { font-size: 16px; }
+  .ed-caption-options input, .ed-background-tools input[type=color] { height: 44px; }
+}

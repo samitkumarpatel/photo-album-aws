@@ -223,3 +223,4 @@
   .ed-tabs button { min-height: 44px; }
   .ed-stage { margin: 4px 12px 6px; }
 }
+.ed-panel .scroll-hints { --hint-bg: #262626; --hint-fg: var(--ed-text); --hint-line: #3a3a3a; }

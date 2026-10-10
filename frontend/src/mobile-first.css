@@ -567,9 +567,7 @@ main:focus { outline: none; }
 }
 
 /* Collection selection and owner sharing status. */
-.selection-toolbar, .album-sharing { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
-.selection-toolbar { padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
-.selection-toolbar > span { margin-right: auto; font-size: 14px; }
+.album-sharing { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
 .sharing-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
 .sharing-badge.shared { color: var(--accent); }
 .album-sharing > span { color: var(--muted); font-size: 13px; }
@@ -579,9 +577,7 @@ main:focus { outline: none; }
 .media-selected .selection-check { background: var(--accent); }
 .share-link-row { flex-wrap: wrap; }
 .share-link-row > span { flex: 1 1 180px; }
-@media (max-width: 480px) { .selection-toolbar .button { flex: 1 1 auto; } .selection-toolbar > span { flex-basis: 100%; } }
 
-.selection-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; }
 
 /* Compact galleries: mobile first, with actions beside the heading when space allows. */
 .album-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 12px 0 18px; border-bottom: 1px solid var(--border); }
@@ -606,8 +602,6 @@ main:focus { outline: none; }
 .gallery-controls .toolbar { margin: 0 0 0 auto; justify-content: flex-end; gap: 8px; }
 .gallery-controls .button, .gallery-controls .pill { min-height: 44px; padding: 9px 14px; font-size: 13px; }
 .selection-entry { display: flex; }
-.selection-toolbar.is-active { margin: 0 0 18px; padding: 10px; gap: 8px; }
-.selection-toolbar.is-active .button { min-height: 44px; padding: 9px 12px; font-size: 13px; }
 .group-heading { justify-content: flex-start; gap: 10px; line-height: 1.5; font-size: 12px; margin-bottom: 12px; }
 .group-heading::before { display: none; }
 .group-heading span { min-width: 0; overflow-wrap: anywhere; }
@@ -629,7 +623,6 @@ main:focus { outline: none; }
   .album-heading-cover { width: 64px; height: 72px; }
   .album-slideshow { display: inline-flex; margin-left: 0; }
   .album-slideshow span { display: inline; }
-  .selection-toolbar.is-active > span { flex-basis: 100%; }
 }
 @media (min-width: 900px) {
   .album-header { grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; padding-bottom: 20px; }
@@ -637,8 +630,6 @@ main:focus { outline: none; }
   .album-actions { justify-content: flex-end; }
   .album-actions .button { padding: 10px 16px; }
   .album-actions .round { padding: 0; }
-  .selection-toolbar.is-active > span { flex-basis: auto; }
-  .selection-toolbar.is-active { position: sticky; top: 76px; z-index: 12; box-shadow: var(--shadow); }
 }
 @media (prefers-reduced-motion: reduce) {
   .media-tile, .media-tile img, .media-tile video, .tile-select { animation: none; transition: none; }
@@ -691,3 +682,58 @@ main:focus { outline: none; }
   .viewer-toolbar { gap: 2px; padding-left: 4px; padding-right: 4px; }
   .viewer-toolbar .icon-button { width: 40px; height: 40px; }
 }
+
+/* ============ selection action bar ============ */
+/* Docked to the bottom so actions stay within thumb reach wherever the grid is scrolled. */
+.selection-bar {
+  position: fixed; left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 25;
+  padding: 6px 8px 8px; border: 1px solid var(--border); border-radius: 22px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent); backdrop-filter: saturate(1.6) blur(18px); -webkit-backdrop-filter: saturate(1.6) blur(18px);
+  box-shadow: var(--shadow-lift); animation: sheet-up .3s var(--ease);
+}
+.selection-bar-head { display: flex; align-items: center; gap: 4px; }
+.selection-count { flex: 1; min-width: 0; line-height: 1.25; }
+.selection-count strong { display: block; font-size: 15px; }
+.selection-count span { display: block; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.selection-all { min-height: 44px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--accent); font-size: 14px; font-weight: 600; }
+.selection-all:hover { background: var(--accent-soft); }
+.selection-actions { display: flex; gap: 4px; margin-top: 4px; }
+.selection-action {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 58px; padding: 6px 4px;
+  border: 0; border-radius: 14px; background: transparent; color: var(--text); font-size: 12px; font-weight: 600;
+  transition: background .15s, transform .15s var(--ease);
+}
+.selection-action span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selection-action:hover:not(:disabled) { background: var(--surface-2); }
+.selection-action:active:not(:disabled) { transform: scale(.95); }
+.selection-action:disabled { opacity: .38; }
+.selection-action.primary-action:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+.selection-action.primary-action:hover:not(:disabled) { background: var(--accent-hover); }
+/* The bar takes the bottom navigation's place, and the grid leaves room to scroll its last row clear of it. */
+body:has(.selection-bar) .bottom-nav { display: none; }
+main:has(.selection-bar) { padding-bottom: calc(180px + env(safe-area-inset-bottom)); }
+@media (min-width: 720px) {
+  .selection-bar { left: 50%; right: auto; bottom: 24px; display: flex; align-items: center; gap: 12px; width: min(760px, calc(100% - 48px)); padding: 8px 8px 8px 6px; border-radius: 999px; transform: translateX(-50%); animation: fade .25s; }
+  .selection-bar-head { flex: 1; min-width: 0; }
+  .selection-actions { flex: none; margin: 0; }
+  .selection-action { flex-direction: row; gap: 8px; min-height: 44px; padding: 0 14px; border-radius: 999px; font-size: 14px; }
+  main:has(.selection-bar) { padding-bottom: 120px; }
+}
+@media (prefers-reduced-motion: reduce) { .selection-bar { animation: none; } }
+
+/* ============ scroll hints (ScrollHints.jsx) ============ */
+.scroll-hints { position: relative; flex: none; min-width: 0; --hint-bg: var(--surface); --hint-fg: var(--text); --hint-line: var(--border); }
+.scroll-hints > :first-child { scrollbar-width: none; }
+.scroll-hints > :first-child::-webkit-scrollbar { display: none; }
+.scroll-hints > .fade-end { mask-image: linear-gradient(to right, #000 calc(100% - 44px), transparent); }
+.scroll-hints > .fade-start { mask-image: linear-gradient(to left, #000 calc(100% - 44px), transparent); }
+.scroll-hints > .fade-start.fade-end { mask-image: linear-gradient(to right, transparent, #000 44px, #000 calc(100% - 44px), transparent); }
+.scroll-hint {
+  position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--hint-line); border-radius: 50%; background: var(--hint-bg); color: var(--hint-fg);
+  box-shadow: 0 2px 8px rgb(0 0 0 / .35); transform: translateY(-50%); transition: opacity .2s;
+}
+.scroll-hint.start { left: 2px; }
+.scroll-hint.end { right: 2px; }
+/* The arrow at an end stays visible but dimmed, so the row still reads as scrolling both ways. */
+.scroll-hint:disabled { opacity: .3; box-shadow: none; }

@@ -7,6 +7,8 @@ import {
 import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy, normalizeEdit, sourcePoint } from './imageOps.js'
 import CameraSpinner from '../CameraSpinner.jsx'
 import { api } from '../api.js'
+import { mediaUrl } from '../media.js'
+import ScrollHints from '../ScrollHints.jsx'
 import { loadEditableImage } from './loadImage.js'
 import { saveEditedPhoto } from './savePhoto.js'
 import './editor.css'
@@ -132,7 +134,15 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       try { editDocument = await api('/api/albums/' + item.albumId + '/photos/' + item.id + '/edit', { signal: controller.signal }) }
       catch (e) { if (e.status !== 404) throw e }
       const recipe = normalizeEdit(editDocument?.recipe || {})
-      const image = await loadEditableImage(editDocument?.url || src, controller.signal)
+      let image, reduced = false
+      try { image = await loadEditableImage(editDocument?.url || src, controller.signal) }
+      catch (e) {
+        if (controller.signal.aborted) throw e
+        // Phones (iOS Safari especially) can run out of memory decoding very large originals; edit the 2048 px copy instead.
+        console.warn('Full-size photo could not be opened for editing; using the display copy.', e)
+        image = await loadEditableImage(mediaUrl(item, 'display'), controller.signal)
+        reduced = true
+      }
       let mask = null
       if (editDocument?.recipe?.background?.maskData) {
         const maskImage = await loadEditableImage(editDocument.recipe.background.maskData, controller.signal)
@@ -152,7 +162,8 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       }
       setThumbs(next)
       setStatus('ready')
-    })().catch(() => { if (!cancelled) { setStatus('error'); setError('This photo couldn’t be opened for editing. Check your connection, or the format may not be supported in the browser.') } })
+      if (reduced) setError('This device couldn’t open the full-size photo, so you’re editing a smaller copy (up to 2048 px).')
+    })().catch(e => { console.error('Photo editor failed to open the photo', e); if (!cancelled) { setStatus('error'); setError('This photo couldn’t be opened for editing. Check your connection, or the format may not be supported in the browser.') } })
     return () => { cancelled = true; controller.abort() }
   }, [src, item.albumId, item.id])
 
@@ -451,7 +462,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
         {tab === 'adjust' && <>
           <Slider key={active} label={activeDef.label} value={edit.adjust[active]} min={activeDef.min} max={activeDef.max} onChange={v => setAdjust(active, v)} onReset={() => setAdjust(active, 0)} />
-          <div className="ed-strip" role="group" aria-label="Adjustments">
+          <ScrollHints className="ed-strip" role="group" aria-label="Adjustments">
             {ADJUSTMENTS.map(a => {
               const Icon = ICONS[a.key]
               const value = edit.adjust[a.key]
@@ -459,22 +470,22 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
                 <span className="ed-chip-icon"><Icon size={19} /></span><span>{a.label}</span>
               </button>
             })}
-          </div>
+          </ScrollHints>
         </>}
 
         {tab === 'filters' && <>
           {filterActive ? <Slider label={FILTERS.find(f => f.id === edit.filter.id).label + ' intensity'} value={edit.filter.strength} min={0} max={100} format={v => v + '%'} onChange={v => update(e => ({ filter: { ...e.filter, strength: v } }))} />
             : <p className="ed-hint">Pick a look. You can fine-tune it afterwards.</p>}
-          <div className="ed-strip" role="group" aria-label="Filters">
+          <ScrollHints className="ed-strip" role="group" aria-label="Filters">
             {FILTERS.map(f => <button key={f.id} className={'ed-filter' + (edit.filter.id === f.id ? ' selected' : '')} aria-pressed={edit.filter.id === f.id} onClick={() => update({ filter: { id: f.id, strength: edit.filter.id === f.id ? edit.filter.strength : 100 } })}>
               {thumbs[f.id] ? <img src={thumbs[f.id]} alt="" /> : <span className="ed-filter-ph" />}<span>{f.label}</span>
             </button>)}
-          </div>
+          </ScrollHints>
         </>}
 
         {tab === 'crop' && <>
           <Slider label="Straighten" value={edit.angle} min={-45} max={45} format={v => (v > 0 ? '+' : '') + v + '°'} onChange={v => update({ angle: v })} onReset={() => update({ angle: 0 })} />
-          <div className="ed-strip" role="group" aria-label="Crop tools">
+          <ScrollHints className="ed-strip" role="group" aria-label="Crop tools">
             <button className="ed-chip" onClick={rotateLeft}><span className="ed-chip-icon"><RotateCcw size={19} /></span><span>Rotate</span></button>
             <button className="ed-chip" onClick={flipX}><span className="ed-chip-icon"><FlipHorizontal2 size={19} /></span><span>Flip</span></button>
             <button className="ed-chip" onClick={flipY}><span className="ed-chip-icon"><FlipVertical2 size={19} /></span><span>Flip V</span></button>
@@ -482,18 +493,18 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
             {ASPECTS.map(a => <button key={a.id} className={'ed-ratio' + (edit.aspect === a.id ? ' selected' : '')} aria-pressed={edit.aspect === a.id} onClick={() => chooseAspect(a.id)}>{a.label}</button>)}
             <span className="ed-divider" aria-hidden="true" />
             <button className="ed-ratio" onClick={resetCrop} disabled={!geometryChanged}>Reset</button>
-          </div>
+          </ScrollHints>
         </>}
       </div>
 
-      <nav className="ed-tabs" aria-label="Tool">
+      <ScrollHints as="nav" className="ed-tabs" aria-label="Tool">
         {TABS.map(([key, label, Icon]) => {
           const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : key === 'watermark' ? !!edit.watermark.value : geometryChanged
           return <button key={key} aria-pressed={tab === key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>
             <span className="ed-tab-icon"><Icon size={21} />{marked && <i className="ed-dot" />}</span><span>{label}</span>
           </button>
         })}
-      </nav>
+      </ScrollHints>
     </section>
 
     {confirmDiscard && <div className="ed-confirm" role="alertdialog" aria-label="Discard changes?">

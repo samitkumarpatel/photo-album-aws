@@ -448,17 +448,37 @@ function useMediaSelection(items) {
 }
 
 function SelectionToolbar({ selection, visible }) {
-  if (!selection.enabled) return visible.some(item => statusOf(item) === 'READY') && <div className="selection-entry"><button className="button secondary" onClick={() => selection.setEnabled(true)}><CheckCircle2 size={18} />Select</button></div>
-  const canCollage = selection.chosen.length >= 2 && selection.chosen.length <= 9 && selection.chosen.every(item => !isVideo(item))
-  return <div className="selection-toolbar is-active" role="region" aria-label="Media selection">
-    <span role="status">{plural(selection.chosen.length, 'item')} selected · up to 100</span>
-    <button className="button secondary" onClick={() => selection.selectAll(visible)}>Select visible</button>
-    <button className="button secondary" onClick={selection.cancel}>Cancel selection</button>
-    <button className="button primary" disabled={!selection.chosen.length} onClick={selection.create}><FolderPlus size={18} />Create album</button>
-    <button className="button secondary" disabled={!canCollage} onClick={selection.collage} aria-describedby={canCollage ? undefined : 'collage-selection-hint'}><LayoutGrid size={18} />Create collage</button>
-    <button className="button secondary" disabled={!selection.chosen.length || selection.chosen.some(isVideo)} onClick={selection.batch}><SlidersHorizontal size={18} />Batch edit photos</button>
-    {selection.cover && <button className="button secondary" disabled={selection.chosen.length !== 1 || !canBeCover(selection.chosen[0])} onClick={() => selection.cover(selection.chosen[0])} title="Select one photo to use as the album cover"><Star size={18} />Set as cover</button>}
-    {!canCollage && <small id="collage-selection-hint" className="selection-hint">For a collage, select 2–9 photos.</small>}
+  const { enabled, cancel } = selection
+  // Escape leaves selection mode, unless a dialog or the viewer is handling it.
+  useEffect(() => {
+    if (!enabled) return
+    const key = e => { if (e.key === 'Escape' && !document.querySelector('dialog[open]')) cancel() }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [enabled, cancel])
+  if (!enabled) return visible.some(item => statusOf(item) === 'READY') && <div className="selection-entry"><button className="button secondary" onClick={() => selection.setEnabled(true)}><CheckCircle2 size={18} />Select</button></div>
+  const count = selection.chosen.length
+  const photosOnly = count > 0 && selection.chosen.every(item => !isVideo(item))
+  const canCollage = count >= 2 && count <= 9 && photosOnly
+  const canCover = count === 1 && canBeCover(selection.chosen[0])
+  const allSelected = count > 0 && count === Math.min(100, visible.filter(item => statusOf(item) === 'READY').length)
+  const hint = !count ? 'Tap photos to select them' : !canCollage && count > 9 ? 'Collages use 2–9 photos' : selection.cover && count > 1 ? 'Pick one photo to set the cover' : null
+  const actions = [
+    { label: 'New album', icon: FolderPlus, onClick: selection.create, disabled: !count, primary: true },
+    { label: 'Collage', icon: LayoutGrid, onClick: selection.collage, disabled: !canCollage, title: 'Select 2–9 photos' },
+    { label: 'Edit', icon: SlidersHorizontal, onClick: selection.batch, disabled: !photosOnly, title: 'Batch edit photos' },
+    ...(selection.cover ? [{ label: 'Cover', icon: Star, onClick: () => selection.cover(selection.chosen[0]), disabled: !canCover, title: 'Set as album cover' }] : []),
+  ]
+  return <div className="selection-bar" role="region" aria-label="Media selection">
+    <div className="selection-bar-head">
+      <button className="icon-button" aria-label="Cancel selection" onClick={cancel}><X size={20} /></button>
+      <div className="selection-count"><strong role="status">{count ? count + ' selected' : 'Select items'}</strong>{hint && <span>{hint}</span>}</div>
+      <button className="selection-all" onClick={() => allSelected ? selection.selectAll([]) : selection.selectAll(visible)}>{allSelected ? 'Clear' : 'Select all'}</button>
+    </div>
+    <div className="selection-actions">
+      {actions.map(({ label, icon: Icon, onClick, disabled, primary, title }) =>
+        <button key={label} className={'selection-action' + (primary ? ' primary-action' : '')} onClick={onClick} disabled={disabled} title={title}><Icon size={20} aria-hidden="true" /><span>{label}</span></button>)}
+    </div>
   </div>
 }
 

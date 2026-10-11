@@ -25,12 +25,13 @@ export default function ScrollHints({ as: Tag = 'div', className = '', children,
     return () => { observer.disconnect(); node.removeEventListener('scroll', measure) }
   }, [children])
   const scroll = direction => ref.current?.scrollBy({ left: direction * ref.current.clientWidth * .7, behavior: 'smooth' })
+  const label = props['aria-label'] || 'options'
   const edges = state.overflow ? (state.start ? '' : ' fade-start') + (state.end ? '' : ' fade-end') : ''
   return <div className={'scroll-hints' + (state.overflow ? ' has-overflow' : '')}>
     <Tag ref={ref} className={className + edges} {...props}>{children}</Tag>
     {state.overflow && <>
-      <button type="button" className="scroll-hint start" tabIndex={-1} aria-hidden="true" disabled={state.start} onClick={() => scroll(-1)}><ChevronLeft size={18} /></button>
-      <button type="button" className="scroll-hint end" tabIndex={-1} aria-hidden="true" disabled={state.end} onClick={() => scroll(1)}><ChevronRight size={18} /></button>
+      <button type="button" className="scroll-hint start" aria-label={'Scroll ' + label + ' left'} disabled={state.start} onClick={() => scroll(-1)}><ChevronLeft size={18} aria-hidden="true" /></button>
+      <button type="button" className="scroll-hint end" aria-label={'Scroll ' + label + ' right'} disabled={state.end} onClick={() => scroll(1)}><ChevronRight size={18} aria-hidden="true" /></button>
     </>}
   </div>
 }

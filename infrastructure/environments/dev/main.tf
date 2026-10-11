@@ -4,7 +4,7 @@ locals {
   project          = "photo-album"
   environment      = "dev"
   region           = "eu-north-1"
-  media_cdn_domain = "d38gufr7jg1s4v.cloudfront.net"
+  media_cdn_domain = local.domain
 
   # Placeholder: replace with a domain you own. The website is served at the apex and www, the API at api.
   domain = "your-task.dev"

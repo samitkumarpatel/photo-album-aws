@@ -90,6 +90,30 @@ resource "aws_cloudfront_function" "spa_router" {
   JS
 }
 
+resource "aws_cloudfront_response_headers_policy" "media_cors" {
+  count = local.has_media ? 1 : 0
+
+  name    = "${var.name}-${var.environment}-media-cors"
+  comment = "Allow browser editors to read signed media, including cached responses"
+
+  cors_config {
+    access_control_allow_credentials = false
+    origin_override                  = true
+
+    access_control_allow_origins {
+      items = ["*"]
+    }
+
+    access_control_allow_methods {
+      items = ["GET", "HEAD", "OPTIONS"]
+    }
+
+    access_control_allow_headers {
+      items = ["*"]
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   comment             = "${var.name} ${var.environment} frontend"
@@ -157,14 +181,15 @@ resource "aws_cloudfront_distribution" "frontend" {
   dynamic "ordered_cache_behavior" {
     for_each = local.has_media ? ["${var.media_path_prefix}/*"] : []
     content {
-      path_pattern           = ordered_cache_behavior.value
-      target_origin_id       = "media-${var.media_bucket_name}"
-      viewer_protocol_policy = "redirect-to-https"
-      allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-      cached_methods         = ["GET", "HEAD"]
-      compress               = true
-      cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # AWS Managed-CachingOptimized
-      trusted_key_groups     = [var.media_key_group_id]
+      path_pattern               = ordered_cache_behavior.value
+      target_origin_id           = "media-${var.media_bucket_name}"
+      viewer_protocol_policy     = "redirect-to-https"
+      allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+      cached_methods             = ["GET", "HEAD"]
+      compress                   = true
+      cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6" # AWS Managed-CachingOptimized
+      response_headers_policy_id = aws_cloudfront_response_headers_policy.media_cors[0].id
+      trusted_key_groups         = [var.media_key_group_id]
     }
   }
 

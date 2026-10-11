@@ -35,6 +35,7 @@ Requested 2026-10-11. Implement features in this order, preserving existing uplo
 9. **Editing comparison and presets:** before/after split view and reusable personal presets; preserve current hold-to-compare behavior.
 10. **Video editing:** trimming, poster selection, audio muting and export while retaining the source.
 11. **Advanced AI tools:** object removal, face grouping and subject search. Select models, execution location and costs before implementation.
+    - See [AI features plan](ai-features-plan.md) for the proposed model evaluation, editor workflow, AWS integration and ordered future tasks. Planning only; implementation remains deferred.
 
 ## Separately planned foundations
 

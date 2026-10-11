@@ -475,7 +475,7 @@ public class AlbumController {
                 p.width(), p.height(), p.takenAt(), urls, PhotoHistory.version(p));
     }
 
-    private String mediaUrl(Photo photo, MediaSize size, String apiPath, Instant notAfter) {
+    String mediaUrl(Photo photo, MediaSize size, String apiPath, Instant notAfter) {
         return mediaUrlSigner.url(photo, size, size.key(photo), apiPath, notAfter);
     }
 
@@ -483,7 +483,7 @@ public class AlbumController {
      * Redirects to the signed URL when media is served outside the API; otherwise streams, falling back to the original.
      * {@code download} always means the original, saved under the photo's filename.
      */
-    private ResponseEntity<StreamingResponseBody> mediaResponse(Photo photo, MediaSize size, boolean download, String apiPath, Instant notAfter) {
+    ResponseEntity<StreamingResponseBody> mediaResponse(Photo photo, MediaSize size, boolean download, String apiPath, Instant notAfter) {
         if (download) size = MediaSize.ORIGINAL;
         String key = size.key(photo);
         if (mediaUrlSigner.redirects()) {

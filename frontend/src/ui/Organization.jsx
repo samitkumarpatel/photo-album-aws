@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowDown, ArrowUp, Download, GripVertical, Play, RotateCcw, Trash2 } from 'lucide-react'
-import { api } from './api.js'
+import { api, apiUrl } from './api.js'
 import { isVideo, mediaUrl } from './media.js'
 import { moveItem, sortMedia } from './albumOrdering.js'
 import { archiveFilename, buildArchive, saveArchive } from './downloadArchive.js'
@@ -92,6 +92,13 @@ export function OrderDialog({ items, order, albumId, Dialog, close, onSaved }) {
   </Dialog>
 }
 
+function TrashPreview({ entry }) {
+  const [failed, setFailed] = useState(false)
+  return <span className="trash-preview">{entry.previewUrl && !failed
+    ? <img src={apiUrl(entry.previewUrl)} alt={'Preview of ' + entry.name} loading="lazy" onError={() => setFailed(true)} />
+    : <Trash2 size={22} aria-hidden="true" />}</span>
+}
+
 export function TrashPage({ Dialog, Hero, ErrorNotice, onChanged, notify }) {
   const [entries, setEntries] = useState([]), [loading, setLoading] = useState(true), [error, setError] = useState(''), [busy, setBusy] = useState(false), [removing, setRemoving] = useState(null)
   const reload = async () => {
@@ -113,7 +120,7 @@ export function TrashPage({ Dialog, Hero, ErrorNotice, onChanged, notify }) {
     <Hero title="Recently Deleted" description="Restore deleted photos and albums within 30 days."><Link to="/" className="button secondary">Back to albums</Link></Hero>
     <ErrorNotice message={error} retry={reload} />
     {loading ? <p role="status">Loading deleted items…</p> : !entries.length && !error ? <p className="empty">Nothing in Recently Deleted.</p>
-      : <ul className="trash-list">{entries.map(entry => <li key={entry.id}><Trash2 size={22} aria-hidden="true" /><div><strong>{entry.name}</strong><span>{entry.kind === 'album' ? entry.count + ' items · Album' : entry.albumName} · {Math.max(1, Math.ceil((Date.parse(entry.expiresAt) - Date.now()) / 86400000))} days left</span></div>
+      : <ul className="trash-list">{entries.map(entry => <li key={entry.id}><TrashPreview entry={entry} /><div><strong>{entry.name}</strong><span>{entry.kind === 'album' ? entry.count + ' items · Album' : entry.albumName} · {Math.max(1, Math.ceil((Date.parse(entry.expiresAt) - Date.now()) / 86400000))} days left</span></div>
         <button className="button secondary" disabled={busy} onClick={() => act(entry)}><RotateCcw size={16} />Restore</button><button className="button danger" disabled={busy} onClick={() => setRemoving(entry)}>Delete permanently</button>
       </li>)}</ul>}
     {removing && <Dialog title="Delete permanently?" description={'“' + removing.name + '” and its saved versions will be removed permanently. This cannot be undone.'} close={() => { if (!busy) setRemoving(null) }} busy={busy}>

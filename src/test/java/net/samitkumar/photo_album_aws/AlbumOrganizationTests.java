@@ -39,6 +39,42 @@ class AlbumOrganizationTests {
     private Photo raw(UUID a, UUID p) { return repository.findPhotoIncludingDeleted(a, p).orElseThrow(); }
     private void status(HttpStatus expected, org.junit.jupiter.api.function.Executable run) { assertEquals(expected, assertThrows(ResponseStatusException.class, run).getStatusCode()); }
 
+    @Test void deletedPreviewsServeRetainedThumbnailsWithoutRestoringItems() throws IOException {
+        var a = album("Trip"); var p = upload(a.id(), "a.jpg");
+        String thumb = storage.putObject("derived/test/thumb.webp", "image/webp", 2, new java.io.ByteArrayInputStream(new byte[]{7, 8}));
+        Photo original = raw(a.id(), p.id());
+        repository.replacePhoto(a.id(), new Photo(original.id(), original.filename(), original.contentType(), original.size(), original.objectKey(),
+                original.uploadedAt(), original.editedAt(), original.status(), original.width(), original.height(), original.takenAt(), thumb, null));
+        var deleted = organization.trashPhoto(a.id(), p.id());
+        assertTrue(deleted.previewUrl().startsWith("/api/trash/" + deleted.id() + "/preview?"));
+        assertEquals(deleted.previewUrl(), organization.trash().getFirst().previewUrl());
+        var response = organization.preview(deleted.id());
+        var bytes = new java.io.ByteArrayOutputStream(); response.getBody().writeTo(bytes);
+        assertArrayEquals(new byte[]{7, 8}, bytes.toByteArray());
+        assertEquals("image/webp", response.getHeaders().getContentType().toString());
+        assertTrue(albums.getAlbum(a.id()).photos().isEmpty());
+        organization.restore(deleted.id());
+        status(HttpStatus.NOT_FOUND, () -> organization.preview(deleted.id()));
+        var removedAlbum = organization.trashAlbum(a.id());
+        assertNotNull(removedAlbum.previewUrl());
+        assertTrue(albums.listAlbums().isEmpty());
+        organization.purge(removedAlbum.id());
+        status(HttpStatus.NOT_FOUND, () -> organization.preview(removedAlbum.id()));
+    }
+
+    @Test void deletedPreviewUsesOriginalFallbackAndRejectsExpiredItems() throws IOException {
+        var a = album("Trip"); var p = upload(a.id(), "a.jpg");
+        var deleted = organization.trashPhoto(a.id(), p.id());
+        var bytes = new java.io.ByteArrayOutputStream(); organization.preview(deleted.id()).getBody().writeTo(bytes);
+        assertArrayEquals(new byte[]{1, 2, 3}, bytes.toByteArray());
+        var expired = new TrashEntry(deleted.id(), a.id(), p.id(), a.name(), p.filename(), "photo", 1,
+                PhotoStatus.READY, Instant.now().minus(Duration.ofDays(31)), Instant.now().minusSeconds(1));
+        repository.putTrash(deleted.id().toString(), PhotoHistory.JSON.writeValueAsString(expired));
+        status(HttpStatus.GONE, () -> organization.preview(deleted.id()));
+        var video = upload(a.id(), "clip.mp4");
+        assertNull(organization.trashPhoto(a.id(), video.id()).previewUrl());
+    }
+
     @Test void favoritesAreIdempotentPersistThroughEditsAndStayPrivate() throws IOException {
         var a = album("Trip"); var p = upload(a.id(), "a.jpg");
         assertFalse(p.favorite());

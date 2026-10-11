@@ -51,9 +51,10 @@ export function multipartBody(entries) {
   return { body: new Blob(parts), contentType: 'multipart/form-data; boundary=' + boundary }
 }
 
+export const apiUrl = url => API_BASE_URL && url.startsWith('/api/') ? `${API_BASE_URL}${url}` : url
+
 export async function apiFetch(url, options = {}) {
-  const apiUrl = API_BASE_URL && url.startsWith('/api/') ? `${API_BASE_URL}${url}` : url
-  return fetch(apiUrl, options)
+  return fetch(apiUrl(url), options)
 }
 
 export function errorMessage(status, body = {}, fallback = 'Something went wrong. Please try again.') {

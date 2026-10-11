@@ -14,6 +14,7 @@ Requested 2026-10-11. Implement features in this order, preserving existing uplo
    - Keep individual downloads working; avoid routing archive bytes through Lambda/API Gateway.
 3. **Recently Deleted — implemented, verified locally**
    - Add recoverable deletion of photos and albums for 30 days, with restore and explicit permanent deletion.
+   - Show retained photo thumbnails and deleted album cover previews; gracefully fall back to an icon if no preview is available. Preview access expires with recovery and does not restore deleted items.
    - Preserve originals, derivatives, edit recipes/history, favorites, ordering and album presentation on restore.
    - Revoke album share links on deletion; restoring must not reactivate old links.
    - Keep existing permanent-delete endpoints working for upload/copy cleanup. Expired records must not be restorable; media cleanup must precede removing their recovery records.

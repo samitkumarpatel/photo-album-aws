@@ -5,6 +5,9 @@ import net.samitkumar.photo_album_aws.PhotoHistory;
 import net.samitkumar.photo_album_aws.controller.AlbumController.*;
 import net.samitkumar.photo_album_aws.processing.ProcessingTrigger;
 import net.samitkumar.photo_album_aws.repository.AlbumRepository;
+import net.samitkumar.photo_album_aws.media.MediaSize;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
@@ -116,7 +119,35 @@ public class AlbumOrganizationController {
         return PhotoHistory.JSON.readValue(json, TrashEntry.class);
     }
     private TrashView view(TrashEntry entry) {
-        return new TrashView(entry.id(), entry.albumId(), entry.photoId(), entry.albumName(), entry.name(), entry.kind(), entry.count(), entry.deletedAt(), entry.expiresAt());
+        String preview = entry.expiresAt().isAfter(Instant.now()) ? previewPhoto(entry)
+                .map(p -> albums.mediaUrl(p, MediaSize.THUMBNAIL, previewPath(entry), entry.expiresAt())).orElse(null) : null;
+        return new TrashView(entry.id(), entry.albumId(), entry.photoId(), entry.albumName(), entry.name(), entry.kind(), entry.count(), entry.deletedAt(), entry.expiresAt(), preview);
+    }
+
+    private static String previewPath(TrashEntry entry) { return "/api/trash/" + entry.id() + "/preview"; }
+
+    private static boolean hasPreview(Photo photo) {
+        // Videos without a generated poster must not be sent to an image element.
+        return photo.status() != PhotoStatus.PURGING && photo.status() != PhotoStatus.UPLOADING
+                && (!photo.contentType().startsWith("video/") || photo.thumbnailKey() != null || photo.displayKey() != null);
+    }
+
+    private Optional<Photo> previewPhoto(TrashEntry entry) {
+        if (entry.photoId() != null) return repository.findPhotoIncludingDeleted(entry.albumId(), entry.photoId())
+                .filter(p -> p.status() == PhotoStatus.TRASHED).filter(AlbumOrganizationController::hasPreview);
+        return repository.findDeletedById(entry.albumId()).flatMap(album -> {
+            UUID cover = CreativeController.presentation(repository, entry.albumId()).coverPhotoId();
+            var candidates = album.photos().stream().filter(p -> p.status() != PhotoStatus.TRASHED).filter(AlbumOrganizationController::hasPreview).toList();
+            return candidates.stream().filter(p -> p.id().equals(cover)).findFirst().or(() -> candidates.stream().findFirst());
+        });
+    }
+
+    @GetMapping("/trash/{id}/preview")
+    public ResponseEntity<StreamingResponseBody> preview(@PathVariable UUID id) {
+        var entry = entry(id);
+        if (!entry.expiresAt().isAfter(Instant.now())) throw error(HttpStatus.GONE, "The recovery period has expired");
+        Photo photo = previewPhoto(entry).orElseThrow(() -> error(HttpStatus.NOT_FOUND, "Preview unavailable"));
+        return albums.mediaResponse(photo, MediaSize.THUMBNAIL, false, previewPath(entry), entry.expiresAt());
     }
 
     @PostMapping("/trash/{id}/restore")
@@ -233,5 +264,5 @@ public class AlbumOrganizationController {
     public record TransferRequest(UUID destinationAlbumId, String mode, Integer version) {}
     public record TrashEntry(UUID id, UUID albumId, UUID photoId, String albumName, String name, String kind, int count,
                              PhotoStatus status, Instant deletedAt, Instant expiresAt) {}
-    public record TrashView(UUID id, UUID albumId, UUID photoId, String albumName, String name, String kind, int count, Instant deletedAt, Instant expiresAt) {}
+    public record TrashView(UUID id, UUID albumId, UUID photoId, String albumName, String name, String kind, int count, Instant deletedAt, Instant expiresAt, String previewUrl) {}
 }

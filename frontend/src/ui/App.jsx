@@ -1,4 +1,4 @@
-import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CameraSpinner, { PageLoader } from './CameraSpinner.jsx'
 import {
@@ -1432,7 +1432,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
   }, [])
 
   // Reset zoom on navigation, keep the filmstrip centered, and warm up neighbours.
-  useEffect(() => {
+  useLayoutEffect(() => {
     setView({ s: 1, x: 0, y: 0, animate: false })
     setNatural(null)
     setHiRes(false)
@@ -1446,6 +1446,14 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
       if (neighbour && !isVideo(neighbour)) new window.Image().src = mediaUrl(neighbour, 'display')
     }
   }, [current.id])
+
+  // A cached photo can finish before React's load handler runs. Reconcile the
+  // actual element after navigation resets, including when the rendition changes.
+  useLayoutEffect(() => {
+    if (video) return
+    const image = img.current
+    setNatural(image?.complete ? { w: image.naturalWidth, h: image.naturalHeight } : null)
+  }, [current.id, src, video])
 
   // A resized window changes the fit size, so start again from "fit".
   useEffect(() => {
@@ -1661,7 +1669,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
             onTimeUpdate={e => { if (e.currentTarget.readyState >= 2) playback.current = { id: current.id, time: e.currentTarget.currentTime } }}
             onLoadedMetadata={e => { if (playback.current.id === current.id && playback.current.time > 0) e.currentTarget.currentTime = playback.current.time }}
             onLoadedData={() => setVideoReady(true)} onError={() => setVideoReady(true)} />
-        : <img key={current.id} ref={img} src={src} alt={current.filename} draggable={false} decoding="async" className={full ? 'sized' : undefined}
+        : <img key={current.id + ':' + src} ref={img} src={src} alt={current.filename} draggable={false} decoding="async" className={full ? 'sized' : undefined}
             onLoad={e => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} onError={() => setNatural({ w: 0, h: 0 })}
             style={full ? { '--w': String(full.w), '--ar': String(full.w / full.h), ...imageStyle } : imageStyle} />}
       {(video ? !videoReady : !natural) && <div className="viewer-loading"><CameraSpinner size={60} inherit delay label={'Loading ' + current.filename} /></div>}

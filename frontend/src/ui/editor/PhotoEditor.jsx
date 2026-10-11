@@ -22,6 +22,18 @@ const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizo
 const PREVIEW_SIDE = 1600
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
+function preparePhoto(image) {
+  const preview = scaledCopy(image, PREVIEW_SIDE)
+  const autoParams = analyze(image)
+  const tiny = scaledCopy(image, 160)
+  const thumbs = {}
+  for (const filter of FILTERS) {
+    const c = render(document.createElement('canvas'), tiny, tiny.width, tiny.height, DEFAULT_EDIT, combineParams({ ...DEFAULT_EDIT, filter: { id: filter.id, strength: 100 } }, null))
+    thumbs[filter.id] = c.toDataURL('image/jpeg', 0.8)
+  }
+  return { image, preview, autoParams, thumbs }
+}
+
 /* ---------- crop math (all values are fractions of the frame) ---------- */
 
 function fitAspect(ratio) {
@@ -134,13 +146,14 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       try { editDocument = await api('/api/albums/' + item.albumId + '/photos/' + item.id + '/edit', { signal: controller.signal }) }
       catch (e) { if (e.status !== 404) throw e }
       const recipe = normalizeEdit(editDocument?.recipe || {})
-      let image, reduced = false
-      try { image = await loadEditableImage(editDocument?.url || src, controller.signal) }
+      let photo, reduced = false
+      try { photo = preparePhoto(await loadEditableImage(editDocument?.url || src, controller.signal)) }
       catch (e) {
         if (controller.signal.aborted) throw e
-        // Phones (iOS Safari especially) can run out of memory decoding very large originals; edit the 2048 px copy instead.
+        // Phones can decode an original but still fail while drawing or reading its
+        // pixels. Include preview preparation in the fallback, not only loading.
         console.warn('Full-size photo could not be opened for editing; using the display copy.', e)
-        image = await loadEditableImage(mediaUrl(item, 'display'), controller.signal)
+        photo = preparePhoto(await loadEditableImage(mediaUrl(item, 'display'), controller.signal))
         reduced = true
       }
       let mask = null
@@ -151,16 +164,10 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       if (cancelled) return
       baseVersion.current = editDocument?.baseVersion || item.version || 1
       setEdit(recipe); setSavedEdit(recipe); setHistory({ stack: [recipe], index: 0 }); setBackgroundMask(mask)
-      full.current = image
-      preview.current = scaledCopy(image, PREVIEW_SIDE)
-      setAutoParams(analyze(image))
-      const tiny = scaledCopy(image, 160)
-      const next = {}
-      for (const filter of FILTERS) {
-        const c = render(document.createElement('canvas'), tiny, tiny.width, tiny.height, DEFAULT_EDIT, combineParams({ ...DEFAULT_EDIT, filter: { id: filter.id, strength: 100 } }, null))
-        next[filter.id] = c.toDataURL('image/jpeg', 0.8)
-      }
-      setThumbs(next)
+      full.current = photo.image
+      preview.current = photo.preview
+      setAutoParams(photo.autoParams)
+      setThumbs(photo.thumbs)
       setStatus('ready')
       if (reduced) setError('This device couldn’t open the full-size photo, so you’re editing a smaller copy (up to 2048 px).')
     })().catch(e => { console.error('Photo editor failed to open the photo', e); if (!cancelled) { setStatus('error'); setError('This photo couldn’t be opened for editing. Check your connection, or the format may not be supported in the browser.') } })

@@ -49,6 +49,12 @@ For collages, use **Select photos & videos** on Photos or an album page, select 
 
 ## Creative features
 
+- **Favorites:** use the heart on a photo/video tile or in its viewer, then use the Favorites filter in Photos or an album. Favorites are owner preferences; public shared galleries stay view-only. The cover star remains separate.
+- **ZIP downloads:** select ready items and choose Download, or use Album options → Download album ZIP. Originals retain their filenames and bytes; duplicate filenames receive numbered suffixes. Progress and cancellation are supported, and an incomplete ZIP is never saved. Archives are limited to 512 MB; use smaller selections for large albums.
+- **Recently Deleted:** album/photo deletion from the UI retains media, recipes, versions and preferences for 30 days. Open Recently Deleted from Albums to restore or permanently delete items. Restore a deleted album before restoring an individually deleted photo inside it. Share links are revoked on album deletion and are not revived on restore. Expired media cleanup runs when Recently Deleted is accessed; a periodic cleanup job is future work. Unfinished upload cleanup and existing permanent-delete API routes keep their previous behavior.
+- **Bulk organization:** select photos/videos and choose Move, Copy or Delete. Move/Copy target an existing album, preserve retained versions and recipes, and regenerate derivatives. Failed transfers keep the source intact; progress, stopping between items and retry of unfinished items are supported. Copies have independent media objects.
+- **Photo ordering:** Album options → Arrange photos supports drag/drop and keyboard/touch move buttons. Saved order applies to owner/shared galleries and slideshows; new uploads remain visible after ordered items. The gallery also offers upload-date, capture-date and filename sorting.
+
 - **Saved edits and history:** reopen the editor to adjust saved settings against the retained source, instead of repeatedly applying edits to exported pixels. The viewer's clock button previews versions, compares with the current image, and restores a version as a new edit. Save as copy creates an independent source and recipe. History metadata starts with edits made after this feature was added; older images start at their earliest recorded version.
 - **Batch editing:** select ready photos and choose **Batch edit photos**. Apply a preset, resize, or watermark to up to 100 photos, saving copies or replacing with history retained. Processing is sequential, shows per-photo results, supports stopping after the current photo and retrying unfinished photos. Videos are excluded.
 - **Album presentation:** open **Album options → Album presentation** for a cover photo, classic/dark/warm/minimal theme, brand name, logo, slideshow timing and presentation watermark. Owner and shared galleries use the same presentation. Slideshow supports photos and videos, pause, previous and next. Presentation watermarks are visual overlays; use photo/batch watermarks to stamp exported images.
@@ -59,6 +65,12 @@ Creative metadata uses `EXTRA#` records within existing DynamoDB album partition
 Security additions (account sign-in, ownership and password-protected links) and subscription enforcement remain deferred until after the photo and album work, as requested for development.
 
 ### Creative API
+
+- `PUT /api/albums/{albumId}/photos/{photoId}/favorite` — set `{ "favorite": true|false }` idempotently.
+- `PUT /api/albums/{albumId}/order` — persist `{ "photoIds": ["…"] }`, a complete permutation of current album photo/video IDs.
+- `POST /api/albums/{albumId}/photos/{photoId}/trash` and `POST /api/albums/{albumId}/trash` — recoverable deletion.
+- `GET /api/trash`, `POST /api/trash/{id}/restore`, `DELETE /api/trash/{id}` — list/reclaim expired recovery records, restore, or permanently delete.
+- `POST /api/albums/{albumId}/photos/{photoId}/transfer` — copy/move to an existing album using `{ "destinationAlbumId": "…", "mode": "copy"|"move", "version": 1 }`; version checking protects concurrent edits. The frontend processes selections one item at a time.
 
 - `GET /api/albums/{albumId}/photos/{photoId}/edit` — retained source URL, source version and current recipe.
 - `GET /api/albums/{albumId}/photos/{photoId}/versions` — current and archived version previews.

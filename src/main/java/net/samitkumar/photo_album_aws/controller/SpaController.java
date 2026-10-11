@@ -10,6 +10,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 @Controller
 @ConditionalOnProperty(prefix = "spring.application.spa", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SpaController {
-    @GetMapping({"/", "/photos", "/albums", "/albums/{albumId}", "/share/{token}"})
+    @GetMapping({"/", "/photos", "/sharing", "/trash", "/albums", "/albums/{albumId}", "/share/{token}"})
     public String app() { return "forward:/index.html"; }
 }

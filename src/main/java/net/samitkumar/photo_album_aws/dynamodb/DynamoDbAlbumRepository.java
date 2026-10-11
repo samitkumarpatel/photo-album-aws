@@ -20,6 +20,7 @@ import software.amazon.awssdk.enhanced.dynamodb.model.PutItemEnhancedRequest;
 import software.amazon.awssdk.enhanced.dynamodb.model.QueryConditional;
 import software.amazon.awssdk.enhanced.dynamodb.model.QueryEnhancedRequest;
 import software.amazon.awssdk.enhanced.dynamodb.model.TransactPutItemEnhancedRequest;
+import software.amazon.awssdk.enhanced.dynamodb.model.TransactDeleteItemEnhancedRequest;
 import software.amazon.awssdk.enhanced.dynamodb.model.TransactWriteItemsEnhancedRequest;
 import software.amazon.awssdk.enhanced.dynamodb.model.UpdateItemEnhancedRequest;
 import software.amazon.awssdk.enhanced.dynamodb.model.WriteBatch;
@@ -53,6 +54,8 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
     private static final String PHOTO_PREFIX = "PHOTO#";
     private static final String SHARE_PREFIX = "SHARE#";
     private static final Expression EXISTS = Expression.builder().expression("attribute_exists(pk)").build();
+    private static final Expression LIVE_ALBUM = Expression.builder().expression("attribute_exists(pk) AND (attribute_not_exists(#deleted) OR #deleted = :false)")
+            .expressionNames(Map.of("#deleted", "deleted")).expressionValues(Map.of(":false", AttributeValue.fromBool(false))).build();
     private static final Expression NOT_EXISTS = Expression.builder().expression("attribute_not_exists(pk)").build();
     private static final int BATCH_SIZE = 25;
 
@@ -89,7 +92,28 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
 
     @Override
     public Optional<Album> findById(UUID albumId) {
-        return loadPartition(albumId).map(Partition::toAlbum);
+        return loadPartition(albumId).filter(p -> !Boolean.TRUE.equals(p.album().getDeleted())).map(Partition::toAlbum)
+                .map(a -> new Album(a.id(), a.name(), a.description(), a.createdAt(), a.photos().stream().filter(p -> p.status() != PhotoStatus.TRASHED && p.status() != PhotoStatus.PURGING).toList()));
+    }
+
+    @Override public Optional<Album> findDeletedById(UUID albumId) {
+        return loadPartition(albumId).filter(p -> Boolean.TRUE.equals(p.album().getDeleted())).map(Partition::toAlbum);
+    }
+    @Override public Optional<Photo> findPhotoIncludingDeleted(UUID albumId, UUID photoId) {
+        return Optional.ofNullable(photos.getItem(GetItemEnhancedRequest.builder().consistentRead(true)
+                .key(Key.builder().partitionValue(albumPk(albumId)).sortValue(PHOTO_PREFIX + photoId).build()).build())).map(DynamoDbAlbumRepository::toPhoto);
+    }
+    @Override public boolean setAlbumDeleted(UUID albumId, boolean expected, boolean deleted) {
+        try {
+            client.updateItem(UpdateItemRequest.builder().tableName(tableName)
+                    .key(Map.of("pk", AttributeValue.fromS(albumPk(albumId)), "sk", AttributeValue.fromS(META)))
+                    .conditionExpression("attribute_exists(pk) AND " + (expected ? "#deleted = :expected" : "(attribute_not_exists(#deleted) OR #deleted = :expected)")
+                            + (!deleted ? " AND (attribute_not_exists(#purging) OR #purging = :next)" : ""))
+                    .updateExpression(expected && deleted ? "SET #deleted = :next, #purging = :next" : "SET #deleted = :next")
+                    .expressionAttributeNames(expected && deleted || !deleted ? Map.of("#deleted", "deleted", "#purging", "purging") : Map.of("#deleted", "deleted"))
+                    .expressionAttributeValues(Map.of(":expected", AttributeValue.fromBool(expected), ":next", AttributeValue.fromBool(deleted))).build());
+            return true;
+        } catch (ConditionalCheckFailedException e) { return false; }
     }
 
     @Override
@@ -116,7 +140,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
         changes.setDescription(description);
         try {
             albums.updateItem(UpdateItemEnhancedRequest.builder(AlbumItem.class)
-                    .item(changes).ignoreNullsMode(IgnoreNullsMode.SCALAR_ONLY).conditionExpression(EXISTS).build());
+                    .item(changes).ignoreNullsMode(IgnoreNullsMode.SCALAR_ONLY).conditionExpression(LIVE_ALBUM).build());
         } catch (ConditionalCheckFailedException e) {
             return Optional.empty();
         }
@@ -143,7 +167,7 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
             enhanced.transactWriteItems(TransactWriteItemsEnhancedRequest.builder()
                     .addConditionCheck(albums, ConditionCheck.builder()
                             .key(Key.builder().partitionValue(albumPk(albumId)).sortValue(META).build())
-                            .conditionExpression(EXISTS).build())
+                            .conditionExpression(LIVE_ALBUM).build())
                     .addPutItem(photos, TransactPutItemEnhancedRequest.builder(PhotoItem.class)
                             .item(toItem(albumId, photo)).conditionExpression(NOT_EXISTS).build())
                     .build());
@@ -166,13 +190,20 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
 
     @Override
     public boolean replacePhotoIfCurrent(UUID albumId, Photo photo, String expectedObjectKey) {
-        var condition = Expression.builder().expression("attribute_exists(pk) AND objectKey = :expected")
+        String state = photo.status() == PhotoStatus.TRASHED ? "#status = :trashed AND #status <> :purging" : "attribute_not_exists(#status) OR (#status <> :trashed AND #status <> :purging)";
+        var condition = Expression.builder().expression("attribute_exists(pk) AND objectKey = :expected AND (" + state + ")")
+                .expressionNames(Map.of("#status", "status")).putExpressionValue(":trashed", AttributeValue.fromS("TRASHED")).putExpressionValue(":purging", AttributeValue.fromS("PURGING"))
                 .putExpressionValue(":expected", AttributeValue.fromS(expectedObjectKey)).build();
         try {
-            photos.putItem(PutItemEnhancedRequest.builder(PhotoItem.class).item(toItem(albumId, photo)).conditionExpression(condition).build());
+            enhanced.transactWriteItems(TransactWriteItemsEnhancedRequest.builder()
+                    .addConditionCheck(albums, ConditionCheck.builder().key(Key.builder().partitionValue(albumPk(albumId)).sortValue(META).build())
+                            .conditionExpression(Expression.builder().expression("attribute_exists(pk) AND (attribute_not_exists(#purging) OR #purging = :false)")
+                                    .expressionNames(Map.of("#purging", "purging")).expressionValues(Map.of(":false", AttributeValue.fromBool(false))).build()).build())
+                    .addPutItem(photos, TransactPutItemEnhancedRequest.builder(PhotoItem.class).item(toItem(albumId, photo)).conditionExpression(condition).build()).build());
             return true;
-        } catch (ConditionalCheckFailedException e) {
-            return false;
+        } catch (TransactionCanceledException e) {
+            if (e.cancellationReasons().stream().anyMatch(r -> "ConditionalCheckFailed".equals(r.code()))) return false;
+            throw e;
         }
     }
 
@@ -258,7 +289,52 @@ public class DynamoDbAlbumRepository implements AlbumRepository {
         return result;
     }
     @Override public void deleteMetadata(UUID albumId, String prefix) {
-        listMetadata(albumId, prefix).keySet().forEach(key -> metadata.deleteItem(Key.builder().partitionValue(albumPk(albumId)).sortValue("EXTRA#" + key).build()));
+        deleteAll(listMetadata(albumId, prefix).keySet().stream()
+                .map(key -> Key.builder().partitionValue(albumPk(albumId)).sortValue("EXTRA#" + key).build()).toList());
+    }
+
+    @Override public Optional<Photo> deletePhotoIfCurrent(UUID albumId, UUID photoId, String expectedObjectKey) {
+        try {
+            var deleted = photos.deleteItem(DeleteItemEnhancedRequest.builder().key(Key.builder().partitionValue(albumPk(albumId)).sortValue(PHOTO_PREFIX + photoId).build())
+                    .conditionExpression(Expression.builder().expression("objectKey = :expected AND (attribute_not_exists(#status) OR (#status <> :trashed AND #status <> :purging))")
+                            .expressionNames(Map.of("#status", "status"))
+                            .expressionValues(Map.of(":expected", AttributeValue.fromS(expectedObjectKey), ":trashed", AttributeValue.fromS("TRASHED"), ":purging", AttributeValue.fromS("PURGING"))).build()).build());
+            return Optional.ofNullable(deleted).map(DynamoDbAlbumRepository::toPhoto);
+        } catch (ConditionalCheckFailedException e) { return Optional.empty(); }
+    }
+
+    @Override public void putTrash(String key, String json) {
+        var item = new MetadataItem(); item.setPk("TRASH#" + OWNER); item.setSk(key); item.setJson(json);
+        metadata.putItem(item);
+    }
+
+    @Override public boolean commitPhotoMove(UUID sourceAlbumId, UUID photoId, String expectedObjectKey, UUID destinationAlbumId, UUID destinationPhotoId) {
+        var livePhoto = Expression.builder().expression("attribute_exists(pk) AND (attribute_not_exists(#status) OR (#status <> :trashed AND #status <> :purging))")
+                .expressionNames(Map.of("#status", "status")).expressionValues(Map.of(":trashed", AttributeValue.fromS("TRASHED"), ":purging", AttributeValue.fromS("PURGING"))).build();
+        var source = Expression.builder().expression(livePhoto.expression() + " AND objectKey = :expected")
+                .expressionNames(livePhoto.expressionNames()).expressionValues(livePhoto.expressionValues()).putExpressionValue(":expected", AttributeValue.fromS(expectedObjectKey)).build();
+        try {
+            enhanced.transactWriteItems(TransactWriteItemsEnhancedRequest.builder()
+                    .addConditionCheck(albums, ConditionCheck.builder().key(Key.builder().partitionValue(albumPk(sourceAlbumId)).sortValue(META).build()).conditionExpression(LIVE_ALBUM).build())
+                    .addConditionCheck(albums, ConditionCheck.builder().key(Key.builder().partitionValue(albumPk(destinationAlbumId)).sortValue(META).build()).conditionExpression(LIVE_ALBUM).build())
+                    .addConditionCheck(photos, ConditionCheck.builder().key(Key.builder().partitionValue(albumPk(destinationAlbumId)).sortValue(PHOTO_PREFIX + destinationPhotoId).build()).conditionExpression(livePhoto).build())
+                    .addDeleteItem(photos, TransactDeleteItemEnhancedRequest.builder().key(Key.builder().partitionValue(albumPk(sourceAlbumId)).sortValue(PHOTO_PREFIX + photoId).build()).conditionExpression(source).build()).build());
+            return true;
+        } catch (TransactionCanceledException e) {
+            if (e.cancellationReasons().stream().anyMatch(r -> "ConditionalCheckFailed".equals(r.code()))) return false;
+            throw e;
+        }
+    }
+    @Override public Map<String, String> listTrash(String prefix) {
+        var result = new TreeMap<String, String>();
+        var condition = prefix.isEmpty() ? QueryConditional.keyEqualTo(k -> k.partitionValue("TRASH#" + OWNER))
+                : QueryConditional.sortBeginsWith(Key.builder().partitionValue("TRASH#" + OWNER).sortValue(prefix).build());
+        var query = QueryEnhancedRequest.builder().consistentRead(true).queryConditional(condition).build();
+        metadata.query(query).items().forEach(item -> result.put(item.getSk(), item.getJson()));
+        return result;
+    }
+    @Override public void deleteTrash(String prefix) {
+        listTrash(prefix).keySet().forEach(key -> metadata.deleteItem(Key.builder().partitionValue("TRASH#" + OWNER).sortValue(key).build()));
     }
 
     /* ---------- helpers ---------- */

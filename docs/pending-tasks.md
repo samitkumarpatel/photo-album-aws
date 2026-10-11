@@ -1,5 +1,7 @@
 # Pending tasks
 
+The ordered product backlog and acceptance criteria are maintained in [album-feature-roadmap.md](album-feature-roadmap.md). The current round covers Favorites, ZIP downloads, Recently Deleted, bulk organization and custom ordering, with regression checks for existing behavior.
+
 Status snapshot: 2026-10-07. 88 tests pass; `npm run build` passes; upload → WebP thumbnails → download smoke-tested locally. Tracks progress on [aws-architecture-plan.md](aws-architecture-plan.md). Update or delete items as they land.
 
 ## Done
@@ -39,7 +41,7 @@ See `infrastructure/README.md` for the commands.
 
 - **Wave 2** (parallel):
   - Cognito sign-in: Spring Security resource server, album ownership (`gsi1pk OWNER#{sub}`), frontend sign-in screens, Terraform user pool + app client.
-  - Remaining album features: Recently Deleted (30-day TTL, `trash/` lifecycle), multi-select bulk delete/move/download and favourites. Recipes, version restore, batch editing, covers, branded presentations and slideshows are implemented.
+  - Favorites, album/selection ZIP downloads, Recently Deleted, bulk copy/move/delete and manual ordering are implemented locally; see [the feature roadmap](album-feature-roadmap.md) for checks, deployment status and limits. Scheduled expiry cleanup for trash remains a follow-up. Recipes, version restore, batch editing, covers, branded presentations and slideshows are implemented.
   - Client portrait background removal, image/color/blur replacement and restore/erase brushes are implemented. For broader object segmentation and object erasing, consider the Phase 5 AI service in `ai-service/` (Python container Lambda behind SQS, job records in DynamoDB): background removal, object eraser.
 - **Wave 3**: phase 6 social features (likes, reactions, comments on shared albums), notifications (SNS, SES), usage analytics in S3 Tables + Athena.
 - Known gaps: summary album listing (avoid reading every partition), timeline index on `takenAt`.

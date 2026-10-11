@@ -10,6 +10,12 @@ import java.time.Instant;
  */
 @DynamoDbBean
 public class AlbumItem {
+    private Boolean deleted;
+    private Boolean purging;
+    public Boolean getPurging() { return purging; }
+    public void setPurging(Boolean value) { purging = value; }
+    public Boolean getDeleted() { return deleted; }
+    public void setDeleted(Boolean value) { deleted = value; }
     private String pk;
     private String sk;
     private String gsi1pk;

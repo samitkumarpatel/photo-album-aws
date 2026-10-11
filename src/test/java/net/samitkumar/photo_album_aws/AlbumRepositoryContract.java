@@ -21,6 +21,61 @@ abstract class AlbumRepositoryContract {
 
     protected abstract AlbumRepository repository();
 
+    @Test void deletedAlbumsAndPhotosRetainTheirRowsButAreHiddenFromNormalReads() {
+        var album = album("Recovery", Instant.now()); var photo = photo(Instant.now());
+        repository().create(album); assertTrue(repository().addPhoto(album.id(), photo));
+        repository().putMetadata(album.id(), "FAVORITE#" + photo.id(), "true");
+        assertTrue(repository().updatePhotoStatus(album.id(), photo.id(), PhotoStatus.READY, PhotoStatus.TRASHED).isPresent());
+        assertTrue(repository().findById(album.id()).orElseThrow().photos().isEmpty());
+        assertFalse(repository().replacePhotoIfCurrent(album.id(), photo, photo.objectKey()));
+        assertTrue(repository().findPhotoIncludingDeleted(album.id(), photo.id()).isPresent());
+        assertTrue(repository().setAlbumDeleted(album.id(), false, true));
+        assertTrue(repository().findById(album.id()).isEmpty());
+        assertTrue(repository().findAll().stream().noneMatch(a -> a.id().equals(album.id())));
+        assertTrue(repository().findDeletedById(album.id()).isPresent());
+        assertFalse(repository().addPhoto(album.id(), photo(Instant.now())));
+        assertTrue(repository().setAlbumDeleted(album.id(), true, false));
+        assertTrue(repository().getMetadata(album.id(), "FAVORITE#" + photo.id()).isPresent());
+        assertTrue(repository().updatePhotoStatus(album.id(), photo.id(), PhotoStatus.TRASHED, PhotoStatus.READY).isPresent());
+        assertEquals(1, repository().findById(album.id()).orElseThrow().photos().size());
+        repository().delete(album.id());
+    }
+
+    @Test void purgeLocksBlockRestoreAndTrashRecordsSurviveAlbumRemoval() {
+        var album = album("Recovery", Instant.now()); repository().create(album);
+        String key = UUID.randomUUID().toString(); repository().putTrash(key, "recovery record");
+        assertTrue(repository().setAlbumDeleted(album.id(), false, true));
+        assertTrue(repository().setAlbumDeleted(album.id(), true, true));
+        assertFalse(repository().setAlbumDeleted(album.id(), true, false));
+        repository().delete(album.id());
+        assertEquals("recovery record", repository().listTrash(key).get(key));
+        repository().deleteTrash(key); assertFalse(repository().listTrash("").containsKey(key));
+    }
+
+    @Test void conditionalRemovalAndDuplicateInsertionProtectOriginals() {
+        var album = album("Transfers", Instant.now()); var photo = photo(Instant.now()); repository().create(album);
+        assertTrue(repository().addPhoto(album.id(), photo)); assertFalse(repository().addPhoto(album.id(), photo));
+        assertTrue(repository().deletePhotoIfCurrent(album.id(), photo.id(), "stale-original").isEmpty());
+        assertEquals(photo, repository().deletePhotoIfCurrent(album.id(), photo.id(), photo.objectKey()).orElseThrow());
+        assertTrue(repository().findById(album.id()).orElseThrow().photos().isEmpty()); repository().delete(album.id());
+    }
+
+    @Test void moveCommitRequiresLiveDestinationAndPurgeBlocksLateWorkers() {
+        var source = album("Source", Instant.now()); var target = album("Target", Instant.now());
+        var photo = photo(Instant.now()); var copy = photo(Instant.now());
+        repository().create(source); repository().create(target);
+        repository().addPhoto(source.id(), photo); repository().addPhoto(target.id(), copy);
+        repository().setAlbumDeleted(target.id(), false, true);
+        assertFalse(repository().commitPhotoMove(source.id(), photo.id(), photo.objectKey(), target.id(), copy.id()));
+        assertTrue(repository().findPhotoIncludingDeleted(source.id(), photo.id()).isPresent());
+        repository().setAlbumDeleted(target.id(), true, false);
+        assertTrue(repository().commitPhotoMove(source.id(), photo.id(), photo.objectKey(), target.id(), copy.id()));
+        assertTrue(repository().findPhotoIncludingDeleted(source.id(), photo.id()).isEmpty());
+        repository().setAlbumDeleted(target.id(), false, true); repository().setAlbumDeleted(target.id(), true, true);
+        assertFalse(repository().replacePhotoIfCurrent(target.id(), copy, copy.objectKey()));
+        repository().delete(source.id()); repository().delete(target.id());
+    }
+
     private static final Instant NOW = Instant.now().truncatedTo(ChronoUnit.MILLIS);
 
     @Test

@@ -24,6 +24,11 @@ public interface AlbumRepository {
 
     Optional<Album> findById(UUID albumId);
 
+    /** Hidden albums retain their rows/media until restored or permanently removed. */
+    Optional<Album> findDeletedById(UUID albumId);
+    boolean setAlbumDeleted(UUID albumId, boolean expected, boolean deleted);
+    Optional<Photo> findPhotoIncludingDeleted(UUID albumId, UUID photoId);
+
     /** Stores a new album. Its photo list is ignored. */
     void create(Album album);
 
@@ -55,6 +60,12 @@ public interface AlbumRepository {
     /** Removes a photo record and returns it. Empty if it did not exist. */
     Optional<Photo> deletePhoto(UUID albumId, UUID photoId);
 
+    /** Removes only the original the caller inspected; protects concurrent edits during transfers/deletion. */
+    Optional<Photo> deletePhotoIfCurrent(UUID albumId, UUID photoId, String expectedObjectKey);
+
+    /** Commit a move only while both albums and the complete destination record still exist and are live. */
+    boolean commitPhotoMove(UUID sourceAlbumId, UUID photoId, String expectedObjectKey, UUID destinationAlbumId, UUID destinationPhotoId);
+
     void saveShare(String token, Share share);
 
     Optional<Share> findShare(String token);
@@ -69,4 +80,9 @@ public interface AlbumRepository {
     Optional<String> getMetadata(UUID albumId, String key);
     java.util.Map<String, String> listMetadata(UUID albumId, String prefix);
     void deleteMetadata(UUID albumId, String prefix);
+
+    /** Recovery records are independent of album partitions and are not listed as albums. */
+    void putTrash(String key, String json);
+    java.util.Map<String, String> listTrash(String prefix);
+    void deleteTrash(String prefix);
 }

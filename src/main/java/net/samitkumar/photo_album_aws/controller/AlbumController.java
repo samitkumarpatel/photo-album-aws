@@ -228,7 +228,7 @@ public class AlbumController {
             }
             mediaStorage.copyObject(stagedKey, relativeKey, contentType);
         } catch (RuntimeException e) {
-            repository.replacePhotoIfCurrent(albumId, current, nextObjectKey);
+            rollbackPhoto(albumId, current, nextObjectKey);
             deleteMediaQuietly(nextObjectKey, albumId);
             try { history.deleteRecipe(albumId, photoId, version); } catch (RuntimeException cleanup) { e.addSuppressed(cleanup); }
             throw e;
@@ -320,12 +320,20 @@ public class AlbumController {
         }
         var updated = new Photo(photoId, filename, contentType, file.getSize(), objectKey, current.uploadedAt(), Instant.now(),
                 PhotoStatus.PROCESSING, null, null, current.takenAt(), current.thumbnailKey(), current.displayKey());
-        if (!repository.replacePhoto(albumId, updated)) {
+        if (!repository.replacePhotoIfCurrent(albumId, updated, current.objectKey())) {
             deleteMediaQuietly(objectKey, albumId);
             throw photoNotFound();
         }
         processingTrigger.uploaded(albumId, photoId);
         return photoResponse(updated, ownerPath(albumId, photoId), null);
+    }
+
+    /** A failed edit must restore its source without resurrecting a concurrently deleted photo. */
+    boolean rollbackPhoto(UUID albumId, Photo original, String failedObjectKey) {
+        if (repository.replacePhotoIfCurrent(albumId, original, failedObjectKey)) return true;
+        var deleted = repository.findPhotoIncludingDeleted(albumId, original.id());
+        return deleted.filter(p -> p.status() == PhotoStatus.TRASHED && p.objectKey().equals(failedObjectKey)).isPresent()
+                && repository.replacePhotoIfCurrent(albumId, original.withStatus(PhotoStatus.TRASHED), failedObjectKey);
     }
 
     @DeleteMapping("/{albumId}/photos/{photoId}")
@@ -335,6 +343,7 @@ public class AlbumController {
         Photo photo = repository.deletePhoto(albumId, photoId).orElseThrow(AlbumController::photoNotFound);
         deletePhotoMedia(albumId, photo);
         history.delete(albumId, photoId);
+        repository.deleteMetadata(albumId, "FAVORITE#" + photoId);
     }
 
     @PostMapping("/{albumId}/shares")
@@ -414,7 +423,7 @@ public class AlbumController {
         Album album = shared.album();
         var photos = album.photos().stream().filter(AlbumController::sharedVisible)
                 .map(p -> photoResponse(p, sharedPath(token, p.id()), sharedMediaExpiry(shared.expiresAt()))).toList();
-        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, null, CreativeController.presentation(repository, album.id()));
+        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, null, CreativeController.presentation(repository, album.id()), AlbumOrganizationController.photoOrder(repository, album));
     }
 
     public Instant sharedStatus(String token) { return requireSharedAlbum(token).expiresAt(); }
@@ -447,11 +456,12 @@ public class AlbumController {
     private AlbumResponse ownerView(Album album) {
         Instant now = Instant.now();
         List<PhotoResponse> photos = new ArrayList<>();
+        var favorites = repository.listMetadata(album.id(), "FAVORITE#");
         for (Photo photo : album.photos()) {
             if (photo.status() == PhotoStatus.UPLOADING && !photo.uploadExpiresAt().isAfter(now)) discardStaleUpload(album.id(), photo);
-            else photos.add(photoResponse(photo, ownerPath(album.id(), photo.id()), null));
+            else photos.add(photoResponse(photo, ownerPath(album.id(), photo.id()), null).withFavorite(favorites.containsKey("FAVORITE#" + photo.id())));
         }
-        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, listShares(album.id()), CreativeController.presentation(repository, album.id()));
+        return new AlbumResponse(album.id(), album.name(), album.description(), album.createdAt(), photos, listShares(album.id()), CreativeController.presentation(repository, album.id()), AlbumOrganizationController.photoOrder(repository, album));
     }
 
     private PhotoResponse photoResponse(Photo p, String apiPath, Instant notAfter) {
@@ -586,7 +596,7 @@ public class AlbumController {
     }
 
     /** All versions of the original and all derivatives. */
-    private void deletePhotoMedia(UUID albumId, Photo photo) {
+    void deletePhotoMedia(UUID albumId, Photo photo) {
         deleteKeysQuietly(albumId, photo);
         deletePrefixQuietly(albumId, "originals/" + albumId + "/" + photo.id() + "/");
         deletePrefixQuietly(albumId, "derived/" + albumId + "/" + photo.id() + "/");
@@ -669,7 +679,10 @@ public class AlbumController {
     public record ReplacementUploadIntent(UUID uploadId, int version, String uploadUrl, String method,
                                           Map<String, String> headers, Instant expiresAt) {}
     /** An album as the API returns it. */
-    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares, CreativeController.Presentation presentation) {
+    public record AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares, CreativeController.Presentation presentation, List<UUID> photoOrder) {
+        public AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares, CreativeController.Presentation presentation) {
+            this(id, name, description, createdAt, photos, shares, presentation, List.of());
+        }
         public AlbumResponse(UUID id, String name, String description, Instant createdAt, List<PhotoResponse> photos, List<ShareResponse> shares) {
             this(id, name, description, createdAt, photos, shares, null);
         }
@@ -679,14 +692,22 @@ public class AlbumController {
     }
     /** A photo as the API returns it: no storage keys, but URLs to load it ({@code urls} is null while UPLOADING). */
     public record PhotoResponse(UUID id, String filename, String contentType, long size, Instant uploadedAt, Instant editedAt,
-                                PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls, int version) {}
+                                PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls, int version, boolean favorite) {
+        public PhotoResponse(UUID id, String filename, String contentType, long size, Instant uploadedAt, Instant editedAt,
+                             PhotoStatus status, Integer width, Integer height, Instant takenAt, MediaUrls urls, int version) {
+            this(id, filename, contentType, size, uploadedAt, editedAt, status, width, height, takenAt, urls, version, false);
+        }
+        public PhotoResponse withFavorite(boolean value) {
+            return new PhotoResponse(id, filename, contentType, size, uploadedAt, editedAt, status, width, height, takenAt, urls, version, value);
+        }
+    }
     public record Album(UUID id, String name, String description, Instant createdAt, List<Photo> photos) {
         public Album withoutObjectKey() {
             return new Album(id, name, description, createdAt, photos.stream().map(Photo::withoutObjectKey).toList());
         }
     }
     /** Lifecycle of a photo: presigned upload pending, derivatives being generated, usable, or rejected. */
-    public enum PhotoStatus { UPLOADING, PROCESSING, READY, FAILED }
+    public enum PhotoStatus { UPLOADING, PROCESSING, READY, FAILED, TRASHED, PURGING }
 
     /**
      * A photo or video. {@code objectKey}, {@code thumbnailKey} and {@code displayKey} are storage keys and never

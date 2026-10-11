@@ -24,14 +24,34 @@ public class InMemoryAlbumRepository implements AlbumRepository {
     private final Map<UUID, Album> albums = new ConcurrentHashMap<>();
     private final Map<String, Share> shares = new ConcurrentHashMap<>();
     private final Map<UUID, Map<String, String>> metadata = new ConcurrentHashMap<>();
+    private final Map<String, String> trash = new ConcurrentHashMap<>();
+    private final Set<UUID> deletedAlbums = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> purgingAlbums = ConcurrentHashMap.newKeySet();
 
     @Override
     public List<Album> findAll() {
-        return albums.values().stream().sorted(Comparator.comparing(Album::createdAt).reversed()).toList();
+        return albums.values().stream().filter(a -> !deletedAlbums.contains(a.id())).map(InMemoryAlbumRepository::visible)
+                .sorted(Comparator.comparing(Album::createdAt).reversed()).toList();
     }
 
     @Override
-    public Optional<Album> findById(UUID albumId) { return Optional.ofNullable(albums.get(albumId)); }
+    public Optional<Album> findById(UUID albumId) { return deletedAlbums.contains(albumId) ? Optional.empty() : Optional.ofNullable(albums.get(albumId)).map(InMemoryAlbumRepository::visible); }
+
+    private static Album visible(Album album) { return withPhotos(album, album.photos().stream().filter(p -> p.status() != PhotoStatus.TRASHED && p.status() != PhotoStatus.PURGING).toList()); }
+    @Override public Optional<Album> findDeletedById(UUID albumId) { return deletedAlbums.contains(albumId) ? Optional.ofNullable(albums.get(albumId)) : Optional.empty(); }
+    @Override public Optional<Photo> findPhotoIncludingDeleted(UUID albumId, UUID photoId) {
+        return Optional.ofNullable(albums.get(albumId)).stream().flatMap(a -> a.photos().stream()).filter(p -> p.id().equals(photoId)).findFirst();
+    }
+    @Override public synchronized boolean setAlbumDeleted(UUID albumId, boolean expected, boolean deleted) {
+        var changed = new AtomicBoolean();
+        albums.computeIfPresent(albumId, (id, album) -> {
+            if (deletedAlbums.contains(id) != expected || !deleted && purgingAlbums.contains(id)) return album;
+            if (expected && deleted) purgingAlbums.add(id);
+            if (deleted) deletedAlbums.add(id); else deletedAlbums.remove(id);
+            changed.set(true); return album;
+        });
+        return changed.get();
+    }
 
     @Override
     public void create(Album album) {
@@ -40,12 +60,19 @@ public class InMemoryAlbumRepository implements AlbumRepository {
 
     @Override
     public Optional<Album> update(UUID albumId, String name, String description) {
-        return Optional.ofNullable(albums.computeIfPresent(albumId, (id, a) -> new Album(id,
-                name == null ? a.name() : name, description == null ? a.description() : description, a.createdAt(), a.photos())));
+        var updated = new AtomicReference<Album>();
+        albums.computeIfPresent(albumId, (id, a) -> {
+            if (deletedAlbums.contains(id)) return a;
+            var next = new Album(id, name == null ? a.name() : name, description == null ? a.description() : description, a.createdAt(), a.photos());
+            updated.set(visible(next)); return next;
+        });
+        return Optional.ofNullable(updated.get());
     }
 
     @Override
-    public Optional<Album> delete(UUID albumId) {
+    public synchronized Optional<Album> delete(UUID albumId) {
+        deletedAlbums.remove(albumId);
+        purgingAlbums.remove(albumId);
         metadata.remove(albumId);
         shares.values().removeIf(share -> share.albumId().equals(albumId));
         return Optional.ofNullable(albums.remove(albumId));
@@ -53,7 +80,13 @@ public class InMemoryAlbumRepository implements AlbumRepository {
 
     @Override
     public boolean addPhoto(UUID albumId, Photo photo) {
-        return albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, Stream.concat(a.photos().stream(), Stream.of(photo)).toList())) != null;
+        var added = new AtomicBoolean();
+        albums.computeIfPresent(albumId, (id, a) -> {
+            if (deletedAlbums.contains(id) || a.photos().stream().anyMatch(p -> p.id().equals(photo.id()))) return a;
+            added.set(true);
+            return withPhotos(a, Stream.concat(a.photos().stream(), Stream.of(photo)).toList());
+        });
+        return added.get();
     }
 
     @Override
@@ -68,10 +101,11 @@ public class InMemoryAlbumRepository implements AlbumRepository {
     }
 
     @Override
-    public boolean replacePhotoIfCurrent(UUID albumId, Photo photo, String expectedObjectKey) {
+    public synchronized boolean replacePhotoIfCurrent(UUID albumId, Photo photo, String expectedObjectKey) {
         var replaced = new AtomicBoolean();
         albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().map(p -> {
-            if (!p.id().equals(photo.id()) || !Objects.equals(p.objectKey(), expectedObjectKey)) return p;
+            if (purgingAlbums.contains(id) || !p.id().equals(photo.id()) || p.status() == PhotoStatus.PURGING
+                    || (p.status() == PhotoStatus.TRASHED && photo.status() != PhotoStatus.TRASHED) || !Objects.equals(p.objectKey(), expectedObjectKey)) return p;
             replaced.set(true);
             return photo;
         }).toList()));
@@ -79,7 +113,7 @@ public class InMemoryAlbumRepository implements AlbumRepository {
     }
 
     @Override
-    public Optional<Photo> updatePhotoStatus(UUID albumId, UUID photoId, PhotoStatus expected, PhotoStatus next) {
+    public synchronized Optional<Photo> updatePhotoStatus(UUID albumId, UUID photoId, PhotoStatus expected, PhotoStatus next) {
         var updated = new AtomicReference<Photo>();
         albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().map(p -> {
             if (!p.id().equals(photoId) || p.status() != expected) return p;
@@ -90,10 +124,26 @@ public class InMemoryAlbumRepository implements AlbumRepository {
     }
 
     @Override
-    public Optional<Photo> deletePhoto(UUID albumId, UUID photoId) {
+    public synchronized Optional<Photo> deletePhoto(UUID albumId, UUID photoId) {
+        return removePhoto(albumId, photoId, null);
+    }
+
+    @Override
+    public synchronized Optional<Photo> deletePhotoIfCurrent(UUID albumId, UUID photoId, String expectedObjectKey) {
+        return removePhoto(albumId, photoId, Objects.requireNonNull(expectedObjectKey));
+    }
+
+    @Override public synchronized boolean commitPhotoMove(UUID sourceAlbumId, UUID photoId, String expectedObjectKey, UUID destinationAlbumId, UUID destinationPhotoId) {
+        if (findById(sourceAlbumId).isEmpty() || findById(destinationAlbumId).isEmpty()) return false;
+        var destination = findPhotoIncludingDeleted(destinationAlbumId, destinationPhotoId);
+        if (destination.isEmpty() || destination.get().status() == PhotoStatus.TRASHED || destination.get().status() == PhotoStatus.PURGING) return false;
+        return deletePhotoIfCurrent(sourceAlbumId, photoId, expectedObjectKey).isPresent();
+    }
+
+    private Optional<Photo> removePhoto(UUID albumId, UUID photoId, String expectedObjectKey) {
         var removed = new AtomicReference<Photo>();
         albums.computeIfPresent(albumId, (id, a) -> withPhotos(a, a.photos().stream().filter(p -> {
-            if (!p.id().equals(photoId)) return true;
+            if (!p.id().equals(photoId) || expectedObjectKey != null && (p.status() == PhotoStatus.TRASHED || p.status() == PhotoStatus.PURGING || !expectedObjectKey.equals(p.objectKey()))) return true;
             removed.set(p);
             return false;
         }).toList()));
@@ -140,4 +190,12 @@ public class InMemoryAlbumRepository implements AlbumRepository {
         var items = metadata.get(albumId);
         if (items != null) items.keySet().removeIf(key -> key.startsWith(prefix));
     }
+
+    @Override public void putTrash(String key, String json) { trash.put(key, json); }
+    @Override public Map<String, String> listTrash(String prefix) {
+        var result = new TreeMap<String, String>();
+        trash.forEach((key, value) -> { if (key.startsWith(prefix)) result.put(key, value); });
+        return result;
+    }
+    @Override public void deleteTrash(String prefix) { trash.keySet().removeIf(key -> key.startsWith(prefix)); }
 }

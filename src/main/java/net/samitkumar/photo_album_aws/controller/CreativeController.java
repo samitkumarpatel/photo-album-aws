@@ -88,7 +88,7 @@ public class CreativeController {
             var recipe = history.recipe(albumId, photoId, version);
             if (recipe != null) history.saveRecipe(albumId, photoId, next, recipe);
             storage.copyObject(source.objectKey(), relative, source.contentType());
-        } catch (RuntimeException | IOException e) { repository.replacePhotoIfCurrent(albumId, current, updated.objectKey()); storage.delete(updated.objectKey());
+        } catch (RuntimeException | IOException e) { albums.rollbackPhoto(albumId, current, updated.objectKey()); storage.delete(updated.objectKey());
             try { history.deleteRecipe(albumId, photoId, next); } catch (RuntimeException cleanup) { e.addSuppressed(cleanup); }
             throw e; }
         processing.uploaded(albumId, photoId);

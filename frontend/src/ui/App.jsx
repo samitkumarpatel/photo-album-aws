@@ -1,15 +1,18 @@
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CameraSpinner, { PageLoader } from './CameraSpinner.jsx'
+import ScrollHints from './ScrollHints.jsx'
 import {
   ArrowDownToLine, ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, Camera, Check, CheckCircle2, ChevronLeft, ChevronRight,
-  Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2, LayoutGrid,
+  Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Heart, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2, LayoutGrid,
   Minimize2, Monitor, Moon, Pencil, RotateCcw, SlidersHorizontal, Star, Sun, Trash2, TriangleAlert, Upload, X, ZoomIn, ZoomOut,
 } from 'lucide-react'
 import './editor/collage.css'
 import { api } from './api.js'
 import { aspectStyle, downloadOriginal, isBroken, isVideo, isViewable, mediaUrl, needsPolling, statusOf, withStaged } from './media.js'
 import { completeUpload, createUpload, discardUpload, intentExpired, multipartUpload, putFile } from './upload/uploads.js'
+import { sortMedia } from './albumOrdering.js'
+import { BulkDialog, DownloadDialog, OrderDialog, TrashPage } from './Organization.jsx'
 
 /* ---------- helpers ---------- */
 
@@ -173,6 +176,9 @@ function App() {
   const [creationItems, setCreationItems] = useState([])
   const [collageItems, setCollageItems] = useState(null)
   const [batchItems, setBatchItems] = useState(null)
+  const [bulkAction, setBulkAction] = useState(null)
+  const [archive, setArchive] = useState(null)
+  const favoriteRequests = useRef(new Set())
   const [upload, setUpload] = useState(null)
   const [dropActive, setDropActive] = useState(false)
   const [toast, setToast] = useState(null)
@@ -263,6 +269,19 @@ function App() {
     albums, loading, error, query, setQuery, refresh, revision, notify, staged,
     createAlbum: (items = []) => { setCreationItems(Array.isArray(items) ? items : []); setCreateOpen(true) },
     createCollage: setCollageItems, batchEdit: setBatchItems,
+    organize: (mode, items) => setBulkAction({ mode, items }),
+    download: (items, name = 'Selected photos') => setArchive({ items, name }),
+    favorite: async item => {
+      const key = item.albumId + '/' + item.id
+      if (favoriteRequests.current.has(key)) return
+      favoriteRequests.current.add(key)
+      try {
+        await api('/api/albums/' + item.albumId + '/photos/' + item.id + '/favorite', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite: !item.favorite }) })
+        await refresh()
+        notify(item.favorite ? 'Removed from favorites' : 'Added to favorites')
+      } catch (e) { notify(e.message) }
+      finally { favoriteRequests.current.delete(key) }
+    },
     uploadMedia: albumId => setUpload({ albumId }),
   }
 
@@ -276,6 +295,7 @@ function App() {
       <Route path="/albums" element={<Navigate replace to="/" />} />
       <Route path="/sharing" element={<SharingPage />} />
       <Route path="/photos" element={<PhotoLibrary />} />
+      <Route path="/trash" element={<TrashPage Dialog={Dialog} Hero={Hero} ErrorNotice={ErrorNotice} onChanged={refresh} notify={notify} />} />
       <Route path="/albums/:albumId" element={<AlbumPage />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
@@ -304,6 +324,8 @@ function App() {
         onSaved={async () => { setCollageItems(null); notify('Collage saved to your album'); await refresh() }} />
     </Suspense>}
     {batchItems && <Suspense fallback={<PageLoader label="Opening batch editor…" />}><BatchEditor items={batchItems} Dialog={Dialog} close={() => setBatchItems(null)} onChanged={refresh} /></Suspense>}
+    {bulkAction && <BulkDialog {...bulkAction} albums={albums} Dialog={Dialog} close={() => setBulkAction(null)} onChanged={refresh} />}
+    {archive && <DownloadDialog {...archive} Dialog={Dialog} close={() => setArchive(null)} />}
     {toast && <div role="status" className="toast"><CheckCircle2 size={18} /><span>{toast}</span><button className="icon-button" onClick={() => setToast(null)} aria-label="Dismiss notification"><X size={16} /></button></div>}
   </UI.Provider>
 }
@@ -416,6 +438,7 @@ function Library() {
   return <main id="main" className="page">
     <Hero title="Albums" description={loading ? 'Loading your library…' : query ? plural(filtered.length, 'album') + ' match “' + query.trim() + '”' : plural(albums.length, 'album') + ' · ' + plural(total, 'moment')}>
       <button className="button primary" onClick={createAlbum}><FolderPlus size={18} />New album</button>
+      <Link className="button secondary" to="/trash"><Trash2 size={18} />Recently Deleted</Link>
     </Hero>
     {albums.length > 1 && <div className="toolbar"><Segmented label="Sort albums" value={sort} onChange={setSort} options={[['recent', 'Recent'], ['name', 'A–Z']]} /></div>}
     <ErrorNotice message={error} retry={refresh} />
@@ -450,7 +473,7 @@ function SharingBadge({ album }) {
 function useMediaSelection(items) {
   const [enabled, setEnabled] = useState(false)
   const [ids, setIds] = useState(() => new Set())
-  const { createAlbum, createCollage, batchEdit } = useUI()
+  const { createAlbum, createCollage, batchEdit, organize, download } = useUI()
   const ready = items.filter(item => statusOf(item) === 'READY')
   const chosen = ready.filter(item => ids.has(item.id))
   const select = id => { setEnabled(true); setIds(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else if (next.size < 100) next.add(id); return next }) }
@@ -460,6 +483,7 @@ function useMediaSelection(items) {
     selectAll: visible => setIds(new Set(visible.filter(item => statusOf(item) === 'READY').slice(0, 100).map(item => item.id))),
     create: () => createAlbum(chosen),
     collage: () => createCollage(chosen), batch: () => batchEdit(chosen),
+    move: () => organize('move', chosen), copy: () => organize('copy', chosen), remove: () => organize('trash', chosen), download: () => download(chosen),
   }
 }
 
@@ -484,6 +508,10 @@ function SelectionToolbar({ selection, visible }) {
     { label: 'Collage', icon: LayoutGrid, onClick: selection.collage, disabled: !canCollage, title: 'Select 2–9 photos' },
     { label: 'Edit', icon: SlidersHorizontal, onClick: selection.batch, disabled: !photosOnly, title: 'Batch edit photos' },
     ...(selection.cover ? [{ label: 'Cover', icon: Star, onClick: () => selection.cover(selection.chosen[0]), disabled: !canCover, title: 'Set as album cover' }] : []),
+    { label: 'Download', icon: ArrowDownToLine, onClick: selection.download, disabled: !count },
+    { label: 'Move', icon: FolderOpen, onClick: selection.move, disabled: !count },
+    { label: 'Copy', icon: Copy, onClick: selection.copy, disabled: !count },
+    { label: 'Delete', icon: Trash2, onClick: selection.remove, disabled: !count },
   ]
   return <div className="selection-bar" role="region" aria-label="Media selection">
     <div className="selection-bar-head">
@@ -491,10 +519,10 @@ function SelectionToolbar({ selection, visible }) {
       <div className="selection-count"><strong role="status">{count ? count + ' selected' : 'Select items'}</strong>{hint && <span>{hint}</span>}</div>
       <button className="selection-all" onClick={() => allSelected ? selection.selectAll([]) : selection.selectAll(visible)}>{allSelected ? 'Clear' : 'Select all'}</button>
     </div>
-    <div className="selection-actions">
+    <ScrollHints className="selection-actions" role="group" aria-label="Selection actions">
       {actions.map(({ label, icon: Icon, onClick, disabled, primary, title }) =>
         <button key={label} className={'selection-action' + (primary ? ' primary-action' : '')} onClick={onClick} disabled={disabled} title={title}><Icon size={20} aria-hidden="true" /><span>{label}</span></button>)}
-    </div>
+    </ScrollHints>
   </div>
 }
 
@@ -517,30 +545,31 @@ function AlbumCard({ album, index }) {
 
 /* ---------- media ---------- */
 
-function useMediaFilters(items, query) {
+function useMediaFilters(items, query, order = null) {
   const [type, setType] = useState('all')
-  const [sort, setSort] = useState('newest')
-  const filtered = useMemo(() => items
-    .filter(item => matches(item.filename + ' ' + (item.albumName || ''), query) && (type === 'all' || (type === 'videos' ? isVideo(item) : !isVideo(item))))
-    .sort((a, b) => sort === 'newest' ? new Date(b.uploadedAt) - new Date(a.uploadedAt) : new Date(a.uploadedAt) - new Date(b.uploadedAt)), [items, query, type, sort])
-  return { type, setType, sort, setSort, filtered }
+  const [chosenSort, setSort] = useState(null)
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const sort = chosenSort || (order?.length ? 'custom' : 'newest')
+  const filtered = useMemo(() => sortMedia(items
+    .filter(item => (!favoritesOnly || item.favorite) && matches(item.filename + ' ' + (item.albumName || ''), query) && (type === 'all' || (type === 'videos' ? isVideo(item) : !isVideo(item)))), sort, order || []), [items, query, type, sort, order, favoritesOnly])
+  return { type, setType, sort, setSort, filtered, favoritesOnly, setFavoritesOnly, customOrder: order !== null }
 }
 
 function MediaToolbar({ filters, items }) {
   const videos = items.filter(isVideo).length
   const mixed = videos > 0 && videos < items.length
-  if (items.length < 2) return null
-  const newest = filters.sort === 'newest'
+  if (!items.length) return null
   return <div className="toolbar">
     {mixed && <Segmented label="Filter media" value={filters.type} onChange={filters.setType} options={[['all', 'All'], ['photos', 'Photos'], ['videos', 'Videos']]} />}
-    <button className="pill" onClick={() => filters.setSort(newest ? 'oldest' : 'newest')} aria-label={'Sorted ' + (newest ? 'newest' : 'oldest') + ' first. Change order'}>
-      {newest ? <ArrowDownWideNarrow size={16} /> : <ArrowUpNarrowWide size={16} />}{newest ? 'Newest' : 'Oldest'}
-    </button>
+    <button className={'pill' + (filters.favoritesOnly ? ' active' : '')} aria-pressed={filters.favoritesOnly} onClick={() => filters.setFavoritesOnly(v => !v)}><Heart size={16} fill={filters.favoritesOnly ? 'currentColor' : 'none'} />Favorites</button>
+    {items.length > 1 && <label className="sort-select"><span className="sr-only">Sort photos</span><select aria-label="Sort photos" value={filters.sort} onChange={e => filters.setSort(e.target.value)}>
+      <option value="newest">Newest uploads</option><option value="oldest">Oldest uploads</option><option value="captured">Capture date</option><option value="filename">Filename</option>{filters.customOrder && <option value="custom">Album order</option>}
+    </select></label>}
   </div>
 }
 
 function PhotoLibrary() {
-  const { albums, loading, error, query, setQuery, refresh, uploadMedia, staged, notify } = useUI()
+  const { albums, loading, error, query, setQuery, refresh, uploadMedia, staged, notify, favorite } = useUI()
   const items = useMemo(() => albums.flatMap(album => withStaged(album.photos || [], staged, album.id).map(item => ({ ...item, albumId: album.id, albumName: album.name }))), [albums, staged])
   const filters = useMediaFilters(items, query)
   const selection = useMediaSelection(items)
@@ -551,9 +580,9 @@ function PhotoLibrary() {
   const close = () => setParams(previous => { previous.delete('media'); return previous }, { replace: true })
   const photoEdit = usePhotoEditing(items, setParams)
   async function deleteMedia() {
-    await api('/api/albums/' + deleting.albumId + '/photos/' + deleting.id, { method: 'DELETE' })
+    await api('/api/albums/' + deleting.albumId + '/photos/' + deleting.id + (statusOf(deleting) === 'UPLOADING' ? '' : '/trash'), { method: statusOf(deleting) === 'UPLOADING' ? 'DELETE' : 'POST' })
     setDeleting(null)
-    notify('Item deleted')
+    notify('Moved to Recently Deleted')
     await refresh()
   }
   return <main id="main" className="page">
@@ -563,12 +592,12 @@ function PhotoLibrary() {
     <GalleryControls selection={selection} filters={filters} items={items} />
     <ErrorNotice message={error} retry={refresh} />
     {loading ? <PageLoader label="Loading your photos…" />
-      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} />
+      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} onFavorite={favorite} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
       : error ? null
       : <Empty title={items.length ? 'Nothing matches' : 'Make room for your moments'} description={items.length ? 'Try a different filter or search.' : 'Upload photos and videos, or drop them anywhere on this page.'}>
-          <button className="button primary" onClick={items.length ? () => { filters.setType('all'); setQuery('') } : () => uploadMedia()}>{items.length ? 'Reset filters' : <><Upload size={18} />Upload photos</>}</button>
+          <button className="button primary" onClick={items.length ? () => { filters.setType('all'); filters.setFavoritesOnly(false); setQuery('') } : () => uploadMedia()}>{items.length ? 'Reset filters' : <><Upload size={18} />Upload photos</>}</button>
         </Empty>}
-    {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={close} onEdit={() => photoEdit.edit(selected)} onHistory={() => photoEdit.history(selected)} />}
+    {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={close} onEdit={() => photoEdit.edit(selected)} onHistory={() => photoEdit.history(selected)} onFavorite={() => favorite(selected)} />}
     {photoEdit.editor}
     {deleting && <DeleteDialog item={deleting} close={() => setDeleting(null)} onDelete={deleteMedia} />}
   </main>
@@ -611,7 +640,7 @@ function ThumbnailMedia({ item, src, quiet }) {
   return <>{spinner}<img ref={imgRef} className={(loaded ? 'loaded' : '') + (aspect ? ' sized' : '')} style={aspect} src={src} alt={item.filename} loading="lazy" decoding="async" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} /></>
 }
 
-function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
+function MediaTile({ item, index, onOpen, onDelete, selection, isCover, onFavorite }) {
   const press = useRef(null)
   const suppressClick = useRef(false)
   const clearPress = () => {
@@ -661,21 +690,24 @@ function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
       <span className="media-label">{item.filename}</span>
       {isCover && <span className="cover-badge"><Star size={12} fill="currentColor" aria-hidden="true" />Cover</span>}
     </button>
+    {onFavorite && !selection?.enabled && open && <button className={'tile-favorite' + (item.favorite ? ' favorite' : '')} aria-label={(item.favorite ? 'Remove from favorites: ' : 'Add to favorites: ') + item.filename} aria-pressed={!!item.favorite} onClick={() => onFavorite(item)}><Heart size={18} fill={item.favorite ? 'currentColor' : 'none'} /></button>}
     {selectable && selection.enabled && <button className="tile-select" role="checkbox" aria-checked={!!selected} aria-label={(selected ? 'Deselect ' : 'Select ') + item.filename} onClick={() => selection.select(item.id)}>
       <span className="selection-check" aria-hidden="true">{selected && <Check size={18} />}</span>
     </button>}
   </div>
 }
 
-function MediaGroups({ items, onOpen, onDelete, selection, coverId }) {
+function MediaGroups({ items, onOpen, onDelete, selection, coverId, onFavorite, groupBy = 'uploadedAt' }) {
+  const renderTile = (item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} isCover={item.id === coverId} onFavorite={onFavorite} />
+  if (!groupBy) return <JustifiedGallery items={items} render={renderTile} />
   const groups = items.reduce((all, item) => {
-    const date = new Date(item.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
+    const date = new Date(item[groupBy] || item.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
     ;(all[date] ||= []).push(item)
     return all
   }, {})
   return Object.entries(groups).map(([date, media]) => <section className="date-group" key={date}>
     <h2 className="group-heading"><span>{date}</span></h2>
-    <JustifiedGallery items={media} render={(item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} isCover={item.id === coverId} />} />
+    <JustifiedGallery items={media} render={renderTile} />
   </section>)
 }
 
@@ -784,7 +816,7 @@ function Branding({ presentation }) { return presentation && <div className="alb
 
 function AlbumPage() {
   const { albumId } = useParams()
-  const { revision, query, setQuery, refresh, notify, uploadMedia, staged } = useUI()
+  const { revision, query, setQuery, refresh, notify, uploadMedia, staged, favorite, download } = useUI()
   const state = useAlbum('/api/albums/' + albumId, revision)
   const [params, setParams] = useSearchParams()
   const [shareOpen, setShareOpen] = useState(false)
@@ -793,9 +825,10 @@ function AlbumPage() {
   const [deleting, setDeleting] = useState(null)
   const [editing, setEditing] = useState(false)
   const [removingAlbum, setRemovingAlbum] = useState(false)
+  const [arranging, setArranging] = useState(false)
   const navigate = useNavigate()
   const items = useMemo(() => withStaged(state.album?.photos || [], staged, albumId).map(item => ({ ...item, albumId, albumName: state.album?.name })), [state.album, staged, albumId])
-  const filters = useMediaFilters(items, query)
+  const filters = useMediaFilters(items, query, state.album?.photoOrder || [])
   const coverId = coverPhotoOf(items, state.album?.presentation)?.id
   const setCover = async item => {
     try {
@@ -817,18 +850,18 @@ function AlbumPage() {
   const closeViewer = () => setParams(previous => { previous.delete('media'); return previous }, { replace: true })
   const photoEdit = usePhotoEditing(items, setParams)
   async function deleteMedia() {
-    await api('/api/albums/' + albumId + '/photos/' + deleting.id, { method: 'DELETE' })
+    await api('/api/albums/' + albumId + '/photos/' + deleting.id + (statusOf(deleting) === 'UPLOADING' ? '' : '/trash'), { method: statusOf(deleting) === 'UPLOADING' ? 'DELETE' : 'POST' })
     closeViewer()
     setDeleting(null)
-    notify('Item deleted')
+    notify('Moved to Recently Deleted')
     await refresh()
   }
   async function deleteAlbum() {
-    await api('/api/albums/' + albumId, { method: 'DELETE' })
+    await api('/api/albums/' + albumId + '/trash', { method: 'POST' })
     const name = state.album.name
     setRemovingAlbum(false)
     navigate('/', { replace: true })
-    notify('“' + name + '” deleted')
+    notify('“' + name + '” moved to Recently Deleted')
     await refresh()
   }
   const back = <Link className="back" to="/"><ArrowLeft size={17} />All albums</Link>
@@ -842,23 +875,26 @@ function AlbumPage() {
             <Menu label="Album options" className="button secondary round" align="right" icon={<Ellipsis size={20} />} items={[
               ...(items.some(isViewable) ? [{ key: 'slideshow', label: 'Slideshow', icon: <Play size={18} />, onSelect: () => setSlideshowOpen(true) }] : []),
               { key: 'presentation', label: 'Album presentation', icon: <Image size={18} />, onSelect: () => setPresentationOpen(true) },
+              ...(items.length ? [{ key: 'order', label: 'Arrange photos', icon: <LayoutGrid size={18} />, onSelect: () => setArranging(true) }] : []),
+              ...(items.some(item => statusOf(item) === 'READY') ? [{ key: 'download', label: 'Download album ZIP', icon: <ArrowDownToLine size={18} />, onSelect: () => download(items.filter(item => statusOf(item) === 'READY'), state.album.name) }] : []),
               { key: 'rename', label: 'Rename', icon: <Pencil size={18} />, onSelect: () => setEditing(true) },
               { key: 'delete', label: 'Delete album', icon: <Trash2 size={18} />, danger: true, onSelect: () => setRemovingAlbum(true) },
             ]} />
           </AlbumHeader>
           <ErrorNotice message={state.error} retry={state.retry} />
           <GalleryControls selection={selection} filters={filters} items={items} />
-          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} coverId={coverId} />
-            : items.length ? <Empty icon={Search} title="Nothing matches" description="Try a different search or filter."><button className="button secondary" onClick={() => { setQuery(''); filters.setType('all') }}>Reset filters</button></Empty>
+          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} coverId={coverId} onFavorite={favorite} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
+            : items.length ? <Empty icon={Search} title="Nothing matches" description="Try a different search or filter."><button className="button secondary" onClick={() => { setQuery(''); filters.setType('all'); filters.setFavoritesOnly(false) }}>Reset filters</button></Empty>
             : <button className="drop-hint" onClick={() => uploadMedia(albumId)}><ImagePlus size={34} /><strong>Add the first photos</strong><span>Tap to choose, or drag files anywhere on this page</span></button>}
         </>
       : <><Hero back={back} title="Album unavailable" /><ErrorNotice message={state.error} retry={state.retry} /></>}
     {selected && <Viewer items={viewable.some(item => item.id === selected.id) ? viewable : items.filter(isViewable)} current={selected} onChange={item => setParams({ media: item.id }, { replace: true })} close={closeViewer} onDelete={() => setDeleting(selected)} onEdit={() => photoEdit.edit(selected)} onHistory={() => photoEdit.history(selected)}
-      onCover={canBeCover(selected) ? () => setCover(selected) : undefined} isCover={selected.id === coverId} />}
+      onCover={canBeCover(selected) ? () => setCover(selected) : undefined} isCover={selected.id === coverId} onFavorite={() => favorite(selected)} />}
     {photoEdit.editor}
     {deleting && <DeleteDialog item={deleting} close={() => setDeleting(null)} onDelete={deleteMedia} />}
     {presentationOpen && <Suspense fallback={<PageLoader label="Opening presentation settings…" />}><AlbumPresentation album={state.album} items={items} Dialog={Dialog} close={() => setPresentationOpen(false)} onSaved={async () => { setPresentationOpen(false); notify('Album presentation saved'); await refresh() }} /></Suspense>}
-    {slideshowOpen && <Suspense fallback={<PageLoader label="Opening slideshow…" />}><Slideshow items={items.filter(isViewable)} presentation={state.album.presentation} Dialog={Dialog} close={() => setSlideshowOpen(false)} /></Suspense>}
+    {slideshowOpen && <Suspense fallback={<PageLoader label="Opening slideshow…" />}><Slideshow items={sortMedia(items.filter(isViewable), filters.sort, state.album.photoOrder || [])} presentation={state.album.presentation} Dialog={Dialog} close={() => setSlideshowOpen(false)} /></Suspense>}
+    {arranging && <OrderDialog items={items} order={state.album.photoOrder || []} albumId={albumId} Dialog={Dialog} close={() => setArranging(false)} onSaved={async () => { setArranging(false); filters.setSort('custom'); await state.reload(); await refresh(); notify('Album order saved') }} />}
     {shareOpen && <ShareDialog album={state.album} close={() => setShareOpen(false)} notify={notify} onChanged={refresh} />}
     {editing && <AlbumFormDialog album={state.album} close={() => setEditing(false)} onSaved={async () => { setEditing(false); notify('Album updated'); await refresh() }} />}
     {removingAlbum && <DeleteAlbumDialog album={state.album} count={items.length} close={() => setRemovingAlbum(false)} onDelete={deleteAlbum} />}
@@ -955,7 +991,7 @@ function DeleteAlbumDialog({ album, count, close, onDelete }) {
   const [error, setError] = useState('')
   async function remove() { setBusy(true); setError(''); try { await onDelete() } catch (e) { setError(e.message); setBusy(false) } }
   return <Dialog title="Delete this album?" close={close} busy={busy}
-    description={'“' + album.name + '”' + (count ? ' and its ' + plural(count, 'item') : '') + ' will be permanently deleted. Any share links will stop working.'}>
+    description={'“' + album.name + '”' + (count ? ' and its ' + plural(count, 'item') : '') + ' will move to Recently Deleted for 30 days. Any share links will stop working.'}>
     <ErrorNotice message={error} />
     <div className="dialog-actions">
       <button data-autofocus className="button secondary" onClick={close} disabled={busy}>Keep album</button>
@@ -1199,7 +1235,7 @@ function DeleteDialog({ item, close, onDelete }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   async function remove() { setBusy(true); setError(''); try { await onDelete() } catch (e) { setError(e.message); setBusy(false) } }
-  return <Dialog title="Delete this item?" description={'“' + item.filename + '” will be permanently removed from this album and its shared links.'} close={close} busy={busy}>
+  return <Dialog title="Delete this item?" description={'“' + item.filename + '”' + (statusOf(item) === 'UPLOADING' ? ' is an unfinished upload and will be removed permanently.' : ' will move to Recently Deleted for 30 days.')} close={close} busy={busy}>
     <ErrorNotice message={error} />
     <div className="dialog-actions">
       <button data-autofocus className="button secondary" onClick={close} disabled={busy}>Keep it</button>
@@ -1393,7 +1429,7 @@ function ShareDialog({ album, close, notify, onChanged }) {
 
 /* ---------- viewer ---------- */
 
-function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, onCover, isCover }) {
+function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, onCover, isCover, onFavorite }) {
   const ref = useRef(null)
   const stage = useRef(null)
   const img = useRef(null)
@@ -1647,6 +1683,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
       <button className="icon-button" aria-label="Close viewer" onClick={close}><X size={22} /></button>
       <div className="viewer-title"><strong>{current.filename}</strong><span>{date} · {index + 1} of {items.length}</span></div>
       <div className="viewer-actions">
+        {onFavorite && <button className="icon-button" aria-label={current.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!current.favorite} onClick={onFavorite}><Heart size={20} fill={current.favorite ? 'currentColor' : 'none'} /></button>}
         {onCover && <button className={'icon-button viewer-secondary-action' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
         {onHistory && !video && <button className="icon-button viewer-secondary-action" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
         {onEdit && !video && <button className="icon-button" aria-label="Edit photo" title="Edit" onClick={onEdit}><SlidersHorizontal size={20} /></button>}
@@ -1740,7 +1777,10 @@ function SharedAlbumPage() {
     return () => { controller.abort(); clearInterval(statusTimer); clearInterval(mediaTimer); document.removeEventListener('visibilitychange', visible) }
   }, [token, state.reload, state.invalidate])
   // Signed `urls` from the API win; `url` is the fallback for backends that stream through the share endpoint.
-  const items = useMemo(() => (state.album?.photos || []).filter(isViewable).map(item => ({ ...item, url: '/api/shared/' + token + '/photos/' + item.id })), [state.album, token])
+  const items = useMemo(() => {
+    const photos = (state.album?.photos || []).filter(isViewable).map(item => ({ ...item, url: '/api/shared/' + token + '/photos/' + item.id }))
+    return state.album?.photoOrder?.length ? sortMedia(photos, 'custom', state.album.photoOrder) : photos
+  }, [state.album, token])
   usePolling(pendingKey(items), state.reload)
   const expired = state.error.includes('expired')
   return <div className="shared-shell">
@@ -1753,7 +1793,7 @@ function SharedAlbumPage() {
       {state.loading ? <PageLoader label="Opening shared album…" />
         : state.album ? <>
             <AlbumHeader album={state.album} items={items}>{!!items.length && <button className="button secondary" onClick={() => setSlideshowOpen(true)}><Play size={18} />Slideshow</button>}</AlbumHeader>
-            {items.length ? <MediaGroups items={items} onOpen={setSelected} /> : <Empty title="No moments here yet" description="The album owner hasn't added photos or videos yet." />}
+            {items.length ? <MediaGroups items={items} onOpen={setSelected} groupBy={state.album.photoOrder?.length ? null : 'uploadedAt'} /> : <Empty title="No moments here yet" description="The album owner hasn't added photos or videos yet." />}
           </>
         : <Empty icon={Clock3} title={expired ? 'This link has expired' : 'This album is unavailable'} description={expired ? 'Ask the album owner for a new share link.' : 'Check your connection or ask the album owner for a new link.'}>
             <button className="button secondary" onClick={state.retry}>Try again</button>

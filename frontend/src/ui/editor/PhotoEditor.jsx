@@ -11,6 +11,7 @@ import { mediaUrl } from '../media.js'
 import ScrollHints from '../ScrollHints.jsx'
 import { loadEditableImage } from './loadImage.js'
 import { saveEditedPhoto } from './savePhoto.js'
+import { drawnCrop } from './cropSelection.js'
 import './editor.css'
 
 const ICONS = {
@@ -102,6 +103,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const baseVersion = useRef(item.version || 1)
   const [history, setHistory] = useState({ stack: [DEFAULT_EDIT], index: 0 })
   const [tab, setTab] = useState('adjust')
+  const [drawingCrop, setDrawingCrop] = useState(false)
   const [active, setActive] = useState('brightness')
   const [autoParams, setAutoParams] = useState(null)
   const [thumbs, setThumbs] = useState({})
@@ -342,6 +344,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
   /* crop dragging */
   function startDrag(e, handle) {
+    if (drawingCrop) return
     e.preventDefault(); e.stopPropagation()
     e.currentTarget.setPointerCapture?.(e.pointerId)
     drag.current = { handle, x: e.clientX, y: e.clientY, crop: edit.crop, id: e.pointerId }
@@ -349,10 +352,35 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   function moveDrag(e) {
     const d = drag.current
     if (!d || d.id !== e.pointerId || !display.w) return
+    if (d.handle === 'draw') {
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 4 && !d.moved) return
+      d.moved = true
+      update({ aspect: 'free', crop: drawnCrop(d.u, d.v, (e.clientX - d.rect.left) / d.rect.width, (e.clientY - d.rect.top) / d.rect.height) })
+      return
+    }
     const crop = resizeCrop(d.crop, d.handle, (e.clientX - d.x) / display.w, (e.clientY - d.y) / display.h, ratioFor(edit.aspect))
     update({ crop })
   }
-  const endDrag = () => { drag.current = null }
+  function startSelection(e) {
+    if (!drawingCrop || e.button !== 0) return
+    e.preventDefault()
+    const rect = e.currentTarget.getBoundingClientRect()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    drag.current = { handle: 'draw', id: e.pointerId, x: e.clientX, y: e.clientY, u: (e.clientX - rect.left) / rect.width, v: (e.clientY - rect.top) / rect.height, rect, crop: edit.crop, aspect: edit.aspect }
+  }
+  const endDrag = e => {
+    const d = drag.current
+    if (!d || d.id !== e.pointerId) return
+    if (e.type === 'pointercancel') update({ crop: d.crop, ...(d.handle === 'draw' ? { aspect: d.aspect } : {}) })
+    if (d.handle === 'draw' && d.moved) setDrawingCrop(false)
+    drag.current = null
+  }
+  function cropKey(e, handle) {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return
+    e.preventDefault(); e.stopPropagation()
+    const step = e.shiftKey ? .05 : .01
+    update({ crop: resizeCrop(edit.crop, handle, e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0, ratioFor(edit.aspect)) })
+  }
 
   /* closing & saving */
   const requestClose = () => { if (saving) return; cancelBackground(); if (dirty) setConfirmDiscard(true); else onClose() }
@@ -408,11 +436,11 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
       <div onPointerDown={tab === 'background' ? brushStart : undefined} onPointerMove={tab === 'background' ? brushMove : undefined} onPointerUp={() => { strokeDrag.current = null }} onPointerCancel={() => { strokeDrag.current = null }} className={'ed-canvas-wrap' + (tab === 'background' && brushMode !== 'off' ? ' ed-brush' : '') + (edit.background.on && !comparing && edit.background.fill === 'transparent' ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
         <canvas ref={canvas} aria-label={comparing ? 'Original photo' : 'Edited photo preview'} role="img" />
         {comparing && <span className="ed-badge">Original</span>}
-        {cropping && !comparing && <div className="ed-crop-layer" onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
+        {cropping && !comparing && <div className={'ed-crop-layer' + (drawingCrop ? ' drawing' : '')} onPointerDown={startSelection} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
           <div className="ed-crop" style={{ left: edit.crop.x * 100 + '%', top: edit.crop.y * 100 + '%', width: edit.crop.w * 100 + '%', height: edit.crop.h * 100 + '%' }}
-            onPointerDown={e => startDrag(e, 'move')}>
-            <span className="ed-grid" />
-            {['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'].map(h => <span key={h} className={'ed-handle ' + h} onPointerDown={e => startDrag(e, h)} />)}
+            tabIndex={0} role="group" aria-label="Crop selection. Drag to move or use arrow keys." aria-describedby="crop-help" onKeyDown={e => { if (e.target === e.currentTarget) cropKey(e, 'move') }} onPointerDown={e => startDrag(e, 'move')}>
+            <span className="ed-grid" aria-hidden="true"><i /><i /><i /><i /></span>
+            {Object.entries({ nw: 'top left', ne: 'top right', sw: 'bottom left', se: 'bottom right', n: 'top', s: 'bottom', e: 'right', w: 'left' }).map(([h, label]) => <button type="button" key={h} aria-label={'Resize crop ' + label} className={'ed-handle ' + h} onKeyDown={e => cropKey(e, h)} onPointerDown={e => startDrag(e, h)} />)}
           </div>
         </div>}
       </div>
@@ -491,6 +519,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
         </>}
 
         {tab === 'crop' && <>
+          <div className="ed-crop-help"><button className={'ed-ratio' + (drawingCrop ? ' selected' : '')} aria-pressed={drawingCrop} onClick={() => setDrawingCrop(value => !value)}>Draw selection</button><p id="crop-help">{drawingCrop ? 'Drag across the photo to draw a new free crop.' : 'Drag the grid to move. Drag a corner or edge to resize.'}</p></div>
           <Slider label="Straighten" value={edit.angle} min={-45} max={45} format={v => (v > 0 ? '+' : '') + v + '°'} onChange={v => update({ angle: v })} onReset={() => update({ angle: 0 })} />
           <ScrollHints className="ed-strip" role="group" aria-label="Crop tools">
             <button className="ed-chip" onClick={rotateLeft}><span className="ed-chip-icon"><RotateCcw size={19} /></span><span>Rotate</span></button>

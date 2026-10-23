@@ -39,13 +39,20 @@
 
 /* crop overlay */
 .ed-crop-layer { position: absolute; inset: 0; overflow: hidden; }
-.ed-crop { position: absolute; box-shadow: 0 0 0 9999px #000000a8; outline: 1px solid #fffc; cursor: move; touch-action: none; }
-.ed-grid { position: absolute; inset: 0; pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent calc(33.33% - .5px), #ffffff59 calc(33.33% - .5px), #ffffff59 calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.66% - .5px), #ffffff59 calc(66.66% - .5px), #ffffff59 calc(66.66% + .5px), transparent calc(66.66% + .5px)),
-    linear-gradient(transparent calc(33.33% - .5px), #ffffff59 calc(33.33% - .5px), #ffffff59 calc(33.33% + .5px), transparent calc(33.33% + .5px), transparent calc(66.66% - .5px), #ffffff59 calc(66.66% - .5px), #ffffff59 calc(66.66% + .5px), transparent calc(66.66% + .5px));
-}
-.ed-handle { position: absolute; width: 32px; height: 32px; touch-action: none; }
+.ed-crop { position: absolute; box-shadow: 0 0 0 9999px #000000a8; outline: 2px solid #fffc; outline-offset: -2px; cursor: move; touch-action: none; }
+.ed-grid { position: absolute; inset: 0; pointer-events: none; }
+.ed-grid i { position: absolute; display: block; background: #fff9; box-shadow: 0 0 2px #000; }
+.ed-grid i:nth-child(1), .ed-grid i:nth-child(2) { top: 0; bottom: 0; width: 1px; }
+.ed-grid i:nth-child(1) { left: 33.333%; } .ed-grid i:nth-child(2) { left: 66.667%; }
+.ed-grid i:nth-child(3), .ed-grid i:nth-child(4) { left: 0; right: 0; height: 1px; }
+.ed-grid i:nth-child(3) { top: 33.333%; } .ed-grid i:nth-child(4) { top: 66.667%; }
+.ed-crop-layer.drawing, .ed-crop-layer.drawing .ed-crop { cursor: crosshair; }
+.ed-crop-layer.drawing .ed-handle { pointer-events: none; }
+.ed-crop:focus-visible { outline: 2px solid var(--ed-accent); outline-offset: -2px; }
+.ed-crop-help { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.ed-crop-help p { margin: 0; font-size: 12px; color: var(--ed-muted); }
+.ed-handle { position: absolute; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 0; background: transparent; touch-action: none; }
+.ed-handle:focus-visible { outline: 2px solid var(--ed-accent); outline-offset: -4px; }
 .ed-handle::after { content: ""; position: absolute; border: 0 solid #fff; }
 .ed-handle.nw { left: -10px; top: -10px; cursor: nwse-resize; }
 .ed-handle.ne { right: -10px; top: -10px; cursor: nesw-resize; }

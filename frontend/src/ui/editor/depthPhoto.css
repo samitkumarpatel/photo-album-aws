@@ -1,0 +1,8 @@
+.depth-preview { display: flex; justify-content: center; background: #151719; border-radius: 12px; overflow: hidden; margin: 16px 0; }
+.depth-preview canvas { display: block; max-width: 100%; max-height: 48vh; width: auto; height: auto; touch-action: none; cursor: grab; }
+.depth-preview canvas:active { cursor: grabbing; }
+.depth-preview canvas:focus-visible { outline: 3px solid #dab784; outline-offset: -4px; }
+.depth-strength { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
+.depth-strength input { flex: 1; min-width: 0; }
+.depth-strength output { min-width: 3em; }
+.depth-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }

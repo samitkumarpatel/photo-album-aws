@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import CameraSpinner, { PageLoader } from './CameraSpinner.jsx'
 import ScrollHints from './ScrollHints.jsx'
 import {
-  ArrowDownToLine, ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, Camera, Check, CheckCircle2, ChevronLeft, ChevronRight,
+  Sparkles, Box, ArrowDownToLine, ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, Camera, Check, CheckCircle2, ChevronLeft, ChevronRight,
   Clock3, Copy, Ellipsis, FolderOpen, FolderPlus, Heart, Image, ImageOff, ImagePlus, Images, Info, Play, Plus, Search, Share2, LayoutGrid,
   Minimize2, Monitor, Moon, Pencil, RotateCcw, SlidersHorizontal, Star, Sun, Trash2, TriangleAlert, Upload, X, ZoomIn, ZoomOut,
 } from 'lucide-react'
@@ -18,6 +18,8 @@ import { BulkDialog, DownloadDialog, OrderDialog, TrashPage } from './Organizati
 
 const UI = createContext(null)
 const useUI = () => useContext(UI)
+const CreativeStudio = lazy(() => import('./editor/CreativeStudio.jsx'))
+const DepthPhoto = lazy(() => import('./editor/DepthPhoto.jsx'))
 const PhotoEditor = lazy(() => import('./editor/PhotoEditor.jsx'))
 const BatchEditor = lazy(() => import('./editor/BatchEditor.jsx'))
 const VersionHistory = lazy(() => import('./editor/VersionHistory.jsx'))
@@ -1430,6 +1432,9 @@ function ShareDialog({ album, close, notify, onChanged }) {
 /* ---------- viewer ---------- */
 
 function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, onCover, isCover, onFavorite }) {
+  const [depthPhoto, setDepthPhoto] = useState(null)
+  const [creativePhoto, setCreativePhoto] = useState(null)
+  const { refresh, notify } = useUI()
   const ref = useRef(null)
   const stage = useRef(null)
   const img = useRef(null)
@@ -1676,7 +1681,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
     : { transform: 'translate(' + view.x + 'px,' + view.y + 'px) scale(' + view.s + ')', transition: view.animate ? undefined : 'none' }
   const date = new Date(current.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 
-  return <dialog ref={ref} tabIndex={-1} className={'viewer' + (chrome ? '' : ' immersive') + (zoomed ? ' zoomed' : '')} aria-label={'Viewer: ' + current.filename}
+  return <><dialog ref={ref} tabIndex={-1} className={'viewer' + (chrome ? '' : ' immersive') + (zoomed ? ' zoomed' : '')} aria-label={'Viewer: ' + current.filename}
     style={drag.y ? { '--fade': 1 - Math.min(drag.y, 300) / 400 } : undefined}
     onCancel={e => { e.preventDefault(); if (zoomed) resetZoom(); else close() }} onKeyDown={onKeyDown}>
     <div className="viewer-toolbar">
@@ -1686,6 +1691,8 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
         {onFavorite && <button className="icon-button" aria-label={current.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!current.favorite} onClick={onFavorite}><Heart size={20} fill={current.favorite ? 'currentColor' : 'none'} /></button>}
         {onCover && <button className={'icon-button viewer-secondary-action' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
         {onHistory && !video && <button className="icon-button viewer-secondary-action" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
+        {!video && statusOf(current) === 'READY' && <button className="icon-button viewer-secondary-action" aria-label="Creative effects" title="Creative effects" onClick={() => setCreativePhoto(current)}><Sparkles size={20} /></button>}
+        {!video && statusOf(current) === 'READY' && <button className="icon-button viewer-secondary-action" aria-label="Create 3D photo" title="Create 3D photo" onClick={() => setDepthPhoto(current)}><Box size={20} /></button>}
         {onEdit && !video && <button className="icon-button" aria-label="Edit photo" title="Edit" onClick={onEdit}><SlidersHorizontal size={20} /></button>}
         {!video && <button className="icon-button hide-small" aria-label="Zoom in" title="Zoom in (+)" onClick={() => zoomBy(1.5)}><ZoomIn size={20} /></button>}
         <a className="icon-button viewer-secondary-action" href={current.urls?.download || originalSrc} download={current.filename} aria-label="Download original" title="Download original"
@@ -1693,6 +1700,8 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
         <button className="icon-button" aria-label="Details" aria-pressed={details} onClick={() => setDetails(value => !value)}><Info size={20} /></button>
         {onDelete && <button className="icon-button viewer-secondary-action" aria-label="Delete item" onClick={onDelete}><Trash2 size={20} /></button>}
         <div className="viewer-mobile-menu"><Menu key={current.id} label="Photo options" icon={<Ellipsis size={22} />} items={[
+          ...(!video && statusOf(current) === 'READY' ? [{ key: 'creative', label: 'Creative effects', icon: <Sparkles size={18} />, onSelect: () => setCreativePhoto(current) }] : []),
+          ...(!video && statusOf(current) === 'READY' ? [{ key: 'depth', label: 'Create 3D photo', icon: <Box size={18} />, onSelect: () => setDepthPhoto(current) }] : []),
           ...(onCover ? [{ key: 'cover', label: isCover ? 'Album cover' : 'Set as album cover', icon: <Star size={18} />, checked: !!isCover, onSelect: () => { if (!isCover) onCover() } }] : []),
           ...(onHistory && !video ? [{ key: 'history', label: 'Photo edit history', icon: <Clock3 size={18} />, onSelect: onHistory }] : []),
           { key: 'download', label: 'Download original', icon: <ArrowDownToLine size={18} />, onSelect: () => downloadOriginal(current).catch(() => window.open(originalSrc, '_blank', 'noopener')) },
@@ -1745,6 +1754,9 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
       {current.albumId && current.albumName && <Link className="button secondary viewer-album" to={'/albums/' + current.albumId}><FolderOpen size={17} />Open album</Link>}
     </div>}
   </dialog>
+  {creativePhoto && <Suspense fallback={<PageLoader label="Opening creative effects…" />}><CreativeStudio item={creativePhoto} Dialog={Dialog} close={() => setCreativePhoto(null)} onSaved={onEdit ? async () => { notify('Saved to album'); await refresh() } : undefined} /></Suspense>}
+  {depthPhoto && <Suspense fallback={<PageLoader label="Opening 3D photo…" />}><DepthPhoto item={depthPhoto} Dialog={Dialog} close={() => setDepthPhoto(null)} /></Suspense>}
+  </>
 }
 
 /* ---------- shared & misc pages ---------- */

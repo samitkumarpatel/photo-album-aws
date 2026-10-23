@@ -49,7 +49,7 @@ export default function BatchEditor({ items, Dialog, close, onChanged }) {
       try {
         const loaded = await loadEditDocument(job.item, abort.signal)
         const edit = apply(loaded.edit), params = combineParams(edit, analyze(loaded.image))
-        const { type, name, copyName } = outputFormat(job.item.contentType, job.item.filename, edit.background.on && edit.background.fill === 'transparent')
+        const { type, name, copyName } = outputFormat(job.item.contentType, job.item.filename, (edit.erasures.length > 0 || (edit.background.on && edit.background.fill === 'transparent')))
         const blob = await exportBlob(loaded.image, edit, params, type, loaded.mask, loaded.backgroundImage)
         const recipe = { ...edit, baseVersion: loaded.baseVersion, background: { ...edit.background, maskData: loaded.mask ? scaledCopy(loaded.mask, 1024).toDataURL('image/png') : '' } }
         await saveEditedPhoto(job.item, new File([blob], mode === 'copy' ? copyName : name, { type }), recipe, mode, abort.signal)

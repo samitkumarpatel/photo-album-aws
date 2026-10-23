@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Aperture, Check, CircleDot, CloudFog, Contrast, Copy, Crop, Droplet, Droplets, Eye, FlipHorizontal2, FlipVertical2,
   Moon, Pipette, Redo2, RotateCcw, Save, SlidersHorizontal, Sparkles, Sun, Sunrise, Thermometer, Triangle,
-  Undo2, WandSparkles, X, Blend, Focus, Waves, Film, Type, Scissors,
+  Undo2, WandSparkles, X, Blend, Focus, Waves, Film, Type, Scissors, Eraser,
 } from 'lucide-react'
 import { ADJUSTMENTS, ASPECTS, DEFAULT_EDIT, FILTERS, analyze, combineParams, exportBlob, orientedSize, outputFormat, render, sameEdit, scaledCopy, normalizeEdit, sourcePoint } from './imageOps.js'
 import CameraSpinner from '../CameraSpinner.jsx'
 import { api } from '../api.js'
 import { mediaUrl } from '../media.js'
-import ScrollHints from '../ScrollHints.jsx'
+import OverflowTools from './OverflowTools.jsx'
 import { loadEditableImage } from './loadImage.js'
 import { saveEditedPhoto } from './savePhoto.js'
 import { drawnCrop } from './cropSelection.js'
@@ -19,7 +19,7 @@ const ICONS = {
   vibrance: Droplets, warmth: Thermometer, tint: Pipette, fade: CloudFog, sharpen: Triangle, vignette: CircleDot,
   clarity: Focus, denoise: Waves, grain: Film, blur: CloudFog,
 }
-const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop], ['text', 'Text', Type], ['background', 'Background', Scissors], ['watermark', 'Watermark', Copy]]
+const TABS = [['auto', 'Auto', WandSparkles], ['adjust', 'Adjust', SlidersHorizontal], ['filters', 'Filters', Blend], ['crop', 'Crop', Crop], ['eraser', 'Eraser', Eraser], ['text', 'Text', Type], ['background', 'Background', Scissors], ['watermark', 'Watermark', Copy]]
 const PREVIEW_SIDE = 1600
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
@@ -87,6 +87,16 @@ function Slider({ label, value, min, max, onChange, format = v => (v > 0 ? '+' :
   </div>
 }
 
+// A setting picker keeps every property reachable without a scrolling panel.
+function SettingPicker({ options, label = 'Setting' }) {
+  const [selected, setSelected] = useState(options[0].id)
+  const active = options.find(option => option.id === selected) || options[0]
+  return <div className="ed-setting-picker">
+    <label className="ed-setting-label">{label}<select aria-label={label} value={active.id} onChange={event => setSelected(event.target.value)}>{options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+    <div className="ed-setting-value">{active.control}</div>
+  </div>
+}
+
 /* ---------- editor ---------- */
 
 export default function PhotoEditor({ item, src, onClose, onSaved }) {
@@ -122,6 +132,8 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
   const [brushMode, setBrushMode] = useState('off')
   const [brushSize, setBrushSize] = useState(6)
   const strokeDrag = useRef(null)
+  const eraseDrag = useRef(null)
+  const [eraseSelection, setEraseSelection] = useState(null)
 
   useEffect(() => () => { backgroundWorker.current?.terminate(); backgroundWorker.current = null }, [])
 
@@ -193,9 +205,6 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     if (!viewport) return
     const updateViewport = () => {
       dialog.current?.style.setProperty('--ed-viewport-height', Math.min(window.innerHeight, viewport.height) + 'px')
-      // The tool panel just got shorter; scroll the field being typed in back into it.
-      const active = document.activeElement
-      if (dialog.current?.contains(active) && active.matches('input, textarea, select')) requestAnimationFrame(() => active.scrollIntoView({ block: 'nearest' }))
     }
     updateViewport()
     viewport.addEventListener('resize', updateViewport)
@@ -342,6 +351,28 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     setBackground({ strokes: [...edit.background.strokes.slice(0, -1), drag.stroke] })
   }
 
+  function selectErase(event) {
+    if (event.button !== 0 || saving || comparing || status !== 'ready') return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    const u = (event.clientX - rect.left) / rect.width, v = (event.clientY - rect.top) / rect.height
+    event.currentTarget.setPointerCapture(event.pointerId)
+    eraseDrag.current = { rect, u, v, id: event.pointerId }
+    setEraseSelection(null)
+  }
+  function moveErase(event) {
+    const drag = eraseDrag.current
+    if (!drag || drag.id !== event.pointerId) return
+    setEraseSelection(drawnCrop(drag.u, drag.v, (event.clientX - drag.rect.left) / drag.rect.width, (event.clientY - drag.rect.top) / drag.rect.height))
+  }
+  function eraseSelected() {
+    if (!eraseSelection || saving) return
+    const { x, y, w, h } = eraseSelection
+    const points = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(([u, v]) => sourcePoint(u, v, edit, full.current.naturalWidth, full.current.naturalHeight))
+    update(e => ({ erasures: [...e.erasures, points] }))
+    setEraseSelection(null)
+  }
+
   /* crop dragging */
   function startDrag(e, handle) {
     if (drawingCrop) return
@@ -388,7 +419,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     if (backgroundBusy || backgroundImageBusy || saving || status !== 'ready' || (edit.background.on && edit.background.fill === 'image' && !backgroundImage)) return
     setSaveMenu(false); setSaving(mode); setError('')
     try {
-      const { type, name, copyName } = outputFormat(item.contentType, item.filename, edit.background.on && edit.background.fill === 'transparent')
+      const { type, name, copyName } = outputFormat(item.contentType, item.filename, (edit.erasures.length > 0 || (edit.background.on && edit.background.fill === 'transparent')))
       const blob = await exportBlob(full.current, edit, params, type, backgroundMask, backgroundImage)
       const file = new File([blob], mode === 'copy' ? copyName : name, { type })
       const recipe = { ...edit, baseVersion: baseVersion.current, background: { ...edit.background, maskData: backgroundMask?.toDataURL('image/png') || '' } }
@@ -433,8 +464,11 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     <div className="ed-stage" ref={stage} onPointerDown={() => saveMenu && setSaveMenu(false)}>
       {status === 'loading' && <div className="ed-status" role="status"><CameraSpinner size={64} inherit decorative /><span>Opening photo…</span></div>}
       {status === 'error' && <div className="ed-status"><span>{error}</span><button className="ed-primary" onClick={onClose}>Close</button></div>}
-      <div onPointerDown={tab === 'background' ? brushStart : undefined} onPointerMove={tab === 'background' ? brushMove : undefined} onPointerUp={() => { strokeDrag.current = null }} onPointerCancel={() => { strokeDrag.current = null }} className={'ed-canvas-wrap' + (tab === 'background' && brushMode !== 'off' ? ' ed-brush' : '') + (edit.background.on && !comparing && edit.background.fill === 'transparent' ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
+      <div onPointerDown={tab === 'background' ? brushStart : undefined} onPointerMove={tab === 'background' ? brushMove : undefined} onPointerUp={() => { strokeDrag.current = null }} onPointerCancel={() => { strokeDrag.current = null }} className={'ed-canvas-wrap' + (tab === 'background' && brushMode !== 'off' ? ' ed-brush' : '') + (!comparing && (edit.erasures.length > 0 || (edit.background.on && edit.background.fill === 'transparent')) ? ' ed-transparent' : '')} style={{ width: display.w, height: display.h, visibility: status === 'ready' ? 'visible' : 'hidden' }}>
         <canvas ref={canvas} aria-label={comparing ? 'Original photo' : 'Edited photo preview'} role="img" />
+        {tab === 'eraser' && !comparing && <div className="ed-erase-layer" aria-label="Drag to select an area to erase" onPointerDown={selectErase} onPointerMove={moveErase} onPointerUp={event => { moveErase(event); eraseDrag.current = null }} onPointerCancel={() => { eraseDrag.current = null; setEraseSelection(null) }}>
+          {eraseSelection && <div className="ed-erase-selection" style={{ left: eraseSelection.x * 100 + '%', top: eraseSelection.y * 100 + '%', width: eraseSelection.w * 100 + '%', height: eraseSelection.h * 100 + '%' }} />}
+        </div>}
         {comparing && <span className="ed-badge">Original</span>}
         {cropping && !comparing && <div className={'ed-crop-layer' + (drawingCrop ? ' drawing' : '')} onPointerDown={startSelection} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
           <div className="ed-crop" style={{ left: edit.crop.x * 100 + '%', top: edit.crop.y * 100 + '%', width: edit.crop.w * 100 + '%', height: edit.crop.h * 100 + '%' }}
@@ -448,44 +482,46 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
     </div>
 
     <section className="ed-panel" aria-label="Editing tools">
-      <div className="ed-tool">
+      <div className="ed-tool" data-tool={tab}>
+        {tab === 'eraser' && <div className="ed-background-tools">
+          <p className="ed-hint">Drag around an object. Erase the selection to transparency (PNG).</p>
+          <div className="ed-background-actions">
+            <button className="ed-primary" disabled={!eraseSelection || !!saving} onClick={eraseSelected}><Eraser size={18} />Erase selection</button>
+            <button className="ed-ratio" disabled={!eraseSelection || !!saving} onClick={() => setEraseSelection(null)}>Clear selection</button>
+            <button className="ed-ratio" disabled={!edit.erasures.length || !!saving} onClick={() => update({ erasures: [] })}>Restore erased areas</button>
+          </div>
+          <p className="ed-hint" role="status">{eraseSelection ? 'Selection ready to erase.' : edit.erasures.length ? 'Erased. Undo to restore, or Save to keep.' : 'Select an area on the photo to begin.'}</p>
+        </div>}
         {tab === 'watermark' && <div className="ed-text-tools">
           <label>Watermark<input maxLength={90} value={edit.watermark.value} placeholder="© Your name" onChange={e => update({ watermark: { ...edit.watermark, value: e.target.value } })} /></label>
-          <label>Position<select value={edit.watermark.position} onChange={e => update({ watermark: { ...edit.watermark, position: e.target.value } })}>{['bottom-right', 'bottom-left', 'top-right', 'top-left'].map(position => <option key={position} value={position}>{position.replace('-', ' ')}</option>)}</select></label>
-          <label>Color<input type="color" value={edit.watermark.color} onChange={e => update({ watermark: { ...edit.watermark, color: e.target.value } })} /></label>
-          <Slider label="Watermark size" value={edit.watermark.size} min={1} max={12} format={v => v + '%'} onChange={size => update({ watermark: { ...edit.watermark, size } })} />
-          <Slider label="Watermark opacity" value={edit.watermark.opacity} min={10} max={100} format={v => v + '%'} onChange={opacity => update({ watermark: { ...edit.watermark, opacity } })} />
-          <label>Export size<select value={edit.export.maxSide} onChange={e => update({ export: { maxSide: Number(e.target.value) } })}><option value="0">Full size · up to 16 MP</option><option value="4096">4096 px</option><option value="2400">2400 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option></select></label>
+          <SettingPicker label="Watermark setting" options={[
+            { id: 'size', label: 'Size', control: <Slider label="Watermark size" value={edit.watermark.size} min={1} max={12} format={v => v + '%'} onChange={size => update({ watermark: { ...edit.watermark, size } })} /> },
+            { id: 'opacity', label: 'Opacity', control: <Slider label="Watermark opacity" value={edit.watermark.opacity} min={10} max={100} format={v => v + '%'} onChange={opacity => update({ watermark: { ...edit.watermark, opacity } })} /> },
+            { id: 'position', label: 'Position', control: <label>Position<select value={edit.watermark.position} onChange={e => update({ watermark: { ...edit.watermark, position: e.target.value } })}>{['bottom-right', 'bottom-left', 'top-right', 'top-left'].map(position => <option key={position} value={position}>{position.replace('-', ' ')}</option>)}</select></label> },
+            { id: 'color', label: 'Color', control: <label>Color<input type="color" value={edit.watermark.color} onChange={e => update({ watermark: { ...edit.watermark, color: e.target.value } })} /></label> },
+            { id: 'export', label: 'Export size', control: <label>Export size<select value={edit.export.maxSide} onChange={e => update({ export: { maxSide: Number(e.target.value) } })}><option value="0">Full size · up to 16 MP</option><option value="4096">4096 px</option><option value="2400">2400 px</option><option value="1600">1600 px</option><option value="1080">1080 px</option></select></label> },
+          ]} />
         </div>}
         {tab === 'background' && <div className="ed-background-tools">
-          <p className="ed-hint">Remove the background around a person. Works best with clear portraits. Processing happens on your device; the first use downloads the tool.</p>
           {backgroundBusy ? <div className="ed-background-progress"><span role="status"><CameraSpinner size={20} inherit decorative />{backgroundProgress}</span><button className="ed-secondary" onClick={cancelBackground}>Cancel removal</button></div>
-            : <div className="ed-background-actions"><button className="ed-primary" onClick={removeBackground} disabled={status !== 'ready' || !!saving || edit.background.on}><Scissors size={18} />{edit.background.on ? 'Background removed' : 'Remove background'}</button>
-              {edit.background.on && <button className="ed-secondary" onClick={() => setBackground({ on: false })} disabled={!!saving}>Restore background</button>}</div>}
-          {edit.background.on && <>
-            <div className="ed-background-actions" role="group" aria-label="Background fill">
-              <button className={'ed-ratio' + (edit.background.fill === 'transparent' ? ' selected' : '')} aria-pressed={edit.background.fill === 'transparent'} onClick={() => setBackground({ fill: 'transparent' })} disabled={!!saving}>Transparent</button>
-              <button className={'ed-ratio' + (edit.background.fill === 'color' ? ' selected' : '')} aria-pressed={edit.background.fill === 'color'} onClick={() => setBackground({ fill: 'color' })} disabled={!!saving}>Solid color</button>
-              {edit.background.fill === 'color' && <label>Color <input type="color" aria-label="Background color" value={edit.background.color} onChange={e => setBackground({ color: e.target.value })} disabled={!!saving} /></label>}
-            </div>
-            <div className="ed-background-actions" role="group" aria-label="More background options">
-              <button className={'ed-ratio' + (edit.background.fill === 'blur' ? ' selected' : '')} aria-pressed={edit.background.fill === 'blur'} onClick={() => setBackground({ fill: 'blur' })}>Blur background</button>
-              <label className="ed-ratio">Upload background<input className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" disabled={!!saving} onChange={e => { chooseBackground(e.target.files?.[0]); e.target.value = '' }} /></label>
-              {edit.background.asset && <button className={'ed-ratio' + (edit.background.fill === 'image' ? ' selected' : '')} aria-pressed={edit.background.fill === 'image'} onClick={() => setBackground({ fill: 'image' })}>Use image</button>}
-            </div>
-            {edit.background.fill === 'blur' && <Slider label="Background blur" value={edit.background.blur} min={5} max={100} onChange={blur => setBackground({ blur })} />}
-            <div className="ed-background-actions" role="group" aria-label="Refine background edges">{[['off', 'Pan / view'], ['restore', 'Restore brush'], ['erase', 'Erase brush']].map(([mode, label]) => <button key={mode} className={'ed-ratio' + (brushMode === mode ? ' selected' : '')} aria-pressed={brushMode === mode} onClick={() => setBrushMode(mode)} disabled={!!saving}>{label}</button>)}</div>
-            {brushMode !== 'off' && <Slider label="Brush size" value={brushSize} min={1} max={25} format={v => v + '%'} onChange={setBrushSize} />}
-            {!!edit.background.strokes.length && <button className="ed-text-button" onClick={() => setBackground({ strokes: [] })} disabled={!!saving}>Reset brush strokes</button>}
-            <p className="ed-hint">{edit.background.fill === 'transparent' ? 'The checkerboard shows transparency. Saved as PNG to keep the background transparent.' : edit.background.fill === 'blur' ? 'The original background is blurred behind the person.' : 'Your replacement background will be included in the saved photo.'}</p>
-          </>}
+            : <button className="ed-primary" onClick={edit.background.on ? () => setBackground({ on: false }) : removeBackground} disabled={status !== 'ready' || !!saving}><Scissors size={18} />{edit.background.on ? 'Restore background' : 'Remove background'}</button>}
+          {!edit.background.on && !backgroundBusy && <p className="ed-hint">Best with portraits. First use downloads the tool; processing runs on your device.</p>}
+          {edit.background.on && <SettingPicker label="Background setting" options={[
+            { id: 'fill', label: 'Background fill', control: <div className="ed-background-fill"><label>Fill<select value={edit.background.fill} disabled={!!saving} onChange={e => setBackground({ fill: e.target.value })}><option value="transparent">Transparent · PNG</option><option value="color">Solid color</option><option value="blur">Blur background</option>{edit.background.asset && <option value="image">Uploaded image</option>}</select></label>{edit.background.fill === 'color' && <label>Color<input type="color" aria-label="Background color" value={edit.background.color} onChange={e => setBackground({ color: e.target.value })} /></label>}{edit.background.fill === 'blur' && <Slider label="Background blur" value={edit.background.blur} min={5} max={100} onChange={blur => setBackground({ blur })} />}</div> },
+            { id: 'upload', label: 'Upload background', control: <label>Background image<input type="file" accept="image/png,image/jpeg,image/webp" disabled={!!saving} onChange={e => { chooseBackground(e.target.files?.[0]); e.target.value = '' }} /></label> },
+            { id: 'brush', label: 'Refine edges', control: <><label>Brush<select aria-label="Refine background edges" value={brushMode} disabled={!!saving} onChange={e => setBrushMode(e.target.value)}><option value="off">Pan / view</option><option value="restore">Restore brush</option><option value="erase">Erase brush</option></select></label>{brushMode !== 'off' && <Slider label="Brush size" value={brushSize} min={1} max={25} format={v => v + '%'} onChange={setBrushSize} />}</> },
+            { id: 'reset', label: 'Reset brush strokes', control: <button className="ed-ratio" disabled={!!saving || !edit.background.strokes.length} onClick={() => setBackground({ strokes: [] })}>Reset brush strokes</button> },
+          ]} />}
         </div>}
         {tab === 'text' && <div className="ed-text-tools">
-          <label>Caption<textarea aria-label="Photo caption" rows={2} maxLength={240} value={edit.text.value} onChange={e => setText({ value: e.target.value })} placeholder="Add a caption to your photo" /></label>
-          <div className="ed-caption-options"><label>Color <input type="color" aria-label="Caption color" value={edit.text.color} onChange={e => setText({ color: e.target.value })} /></label><button className="ed-text-button" disabled={!edit.text.value} onClick={() => update({ text: DEFAULT_EDIT.text })}>Remove caption</button></div>
-          <Slider label="Text size" value={edit.text.size} min={2} max={20} format={v => v + '%'} onChange={size => setText({ size })} />
-          <Slider label="Horizontal position" value={edit.text.x} min={0} max={100} format={v => v + '%'} onChange={x => setText({ x })} />
-          <Slider label="Vertical position" value={edit.text.y} min={0} max={100} format={v => v + '%'} onChange={y => setText({ y })} />
+          <label>Caption<textarea aria-label="Photo caption" rows={1} maxLength={240} value={edit.text.value} onChange={e => setText({ value: e.target.value })} placeholder="Add a caption" /></label>
+          <SettingPicker label="Text setting" options={[
+            { id: 'size', label: 'Size', control: <Slider label="Text size" value={edit.text.size} min={2} max={20} format={v => v + '%'} onChange={size => setText({ size })} /> },
+            { id: 'x', label: 'Horizontal position', control: <Slider label="Horizontal position" value={edit.text.x} min={0} max={100} format={v => v + '%'} onChange={x => setText({ x })} /> },
+            { id: 'y', label: 'Vertical position', control: <Slider label="Vertical position" value={edit.text.y} min={0} max={100} format={v => v + '%'} onChange={y => setText({ y })} /> },
+            { id: 'color', label: 'Color', control: <label>Caption color<input type="color" aria-label="Caption color" value={edit.text.color} onChange={e => setText({ color: e.target.value })} /></label> },
+            { id: 'remove', label: 'Remove caption', control: <button className="ed-ratio" disabled={!edit.text.value} onClick={() => update({ text: DEFAULT_EDIT.text })}>Remove caption</button> },
+          ]} />
         </div>}
         {tab === 'auto' && <div className="ed-auto">
           <button className={'ed-auto-toggle' + (edit.auto.on ? ' on' : '')} aria-pressed={edit.auto.on} onClick={() => update(e => ({ auto: { ...e.auto, on: !e.auto.on } }))} disabled={!autoParams}>
@@ -497,7 +533,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
         {tab === 'adjust' && <>
           <Slider key={active} label={activeDef.label} value={edit.adjust[active]} min={activeDef.min} max={activeDef.max} onChange={v => setAdjust(active, v)} onReset={() => setAdjust(active, 0)} />
-          <ScrollHints className="ed-strip" role="group" aria-label="Adjustments">
+          <OverflowTools className="ed-strip" role="group" aria-label="Adjustments">
             {ADJUSTMENTS.map(a => {
               const Icon = ICONS[a.key]
               const value = edit.adjust[a.key]
@@ -505,23 +541,23 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
                 <span className="ed-chip-icon"><Icon size={19} /></span><span>{a.label}</span>
               </button>
             })}
-          </ScrollHints>
+          </OverflowTools>
         </>}
 
         {tab === 'filters' && <>
           {filterActive ? <Slider label={FILTERS.find(f => f.id === edit.filter.id).label + ' intensity'} value={edit.filter.strength} min={0} max={100} format={v => v + '%'} onChange={v => update(e => ({ filter: { ...e.filter, strength: v } }))} />
             : <p className="ed-hint">Pick a look. You can fine-tune it afterwards.</p>}
-          <ScrollHints className="ed-strip" role="group" aria-label="Filters">
+          <OverflowTools className="ed-strip" role="group" aria-label="Filters">
             {FILTERS.map(f => <button key={f.id} className={'ed-filter' + (edit.filter.id === f.id ? ' selected' : '')} aria-pressed={edit.filter.id === f.id} onClick={() => update({ filter: { id: f.id, strength: edit.filter.id === f.id ? edit.filter.strength : 100 } })}>
               {thumbs[f.id] ? <img src={thumbs[f.id]} alt="" /> : <span className="ed-filter-ph" />}<span>{f.label}</span>
             </button>)}
-          </ScrollHints>
+          </OverflowTools>
         </>}
 
         {tab === 'crop' && <>
           <div className="ed-crop-help"><button className={'ed-ratio' + (drawingCrop ? ' selected' : '')} aria-pressed={drawingCrop} onClick={() => setDrawingCrop(value => !value)}>Draw selection</button><p id="crop-help">{drawingCrop ? 'Drag across the photo to draw a new free crop.' : 'Drag the grid to move. Drag a corner or edge to resize.'}</p></div>
           <Slider label="Straighten" value={edit.angle} min={-45} max={45} format={v => (v > 0 ? '+' : '') + v + '°'} onChange={v => update({ angle: v })} onReset={() => update({ angle: 0 })} />
-          <ScrollHints className="ed-strip" role="group" aria-label="Crop tools">
+          <OverflowTools className="ed-strip" role="group" aria-label="Crop tools">
             <button className="ed-chip" onClick={rotateLeft}><span className="ed-chip-icon"><RotateCcw size={19} /></span><span>Rotate</span></button>
             <button className="ed-chip" onClick={flipX}><span className="ed-chip-icon"><FlipHorizontal2 size={19} /></span><span>Flip</span></button>
             <button className="ed-chip" onClick={flipY}><span className="ed-chip-icon"><FlipVertical2 size={19} /></span><span>Flip V</span></button>
@@ -529,18 +565,18 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
             {ASPECTS.map(a => <button key={a.id} className={'ed-ratio' + (edit.aspect === a.id ? ' selected' : '')} aria-pressed={edit.aspect === a.id} onClick={() => chooseAspect(a.id)}>{a.label}</button>)}
             <span className="ed-divider" aria-hidden="true" />
             <button className="ed-ratio" onClick={resetCrop} disabled={!geometryChanged}>Reset</button>
-          </ScrollHints>
+          </OverflowTools>
         </>}
       </div>
 
-      <ScrollHints as="nav" className="ed-tabs" aria-label="Tool">
+      <OverflowTools as="nav" className="ed-tabs" aria-label="Tool">
         {TABS.map(([key, label, Icon]) => {
-          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : key === 'watermark' ? !!edit.watermark.value : geometryChanged
-          return <button key={key} aria-pressed={tab === key} className={tab === key ? 'selected' : ''} onClick={() => setTab(key)}>
+          const marked = key === 'auto' ? edit.auto.on : key === 'adjust' ? Object.values(edit.adjust).some(Boolean) : key === 'filters' ? filterActive : key === 'eraser' ? !!edit.erasures.length : key === 'text' ? !!edit.text.value : key === 'background' ? edit.background.on : key === 'watermark' ? !!edit.watermark.value : geometryChanged
+          return <button key={key} aria-label={label} aria-pressed={tab === key} className={tab === key ? 'selected' : ''} onClick={() => { setTab(key); setEraseSelection(null) }}>
             <span className="ed-tab-icon"><Icon size={21} />{marked && <i className="ed-dot" />}</span><span>{label}</span>
           </button>
         })}
-      </ScrollHints>
+      </OverflowTools>
     </section>
 
     {confirmDiscard && <div className="ed-confirm" role="alertdialog" aria-label="Discard changes?">

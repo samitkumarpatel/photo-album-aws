@@ -238,3 +238,63 @@
   .ed-text-tools textarea, .ed-text-tools input, .ed-text-tools select { font-size: 16px; }
   .ed-caption-options input, .ed-background-tools input[type=color] { height: 44px; }
 }
+
+/* Fit tool menus into one row, with an accessible native overflow dropdown. */
+.ed-overflow { position: relative; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 6px; overflow: hidden; min-width: 0; }
+.ed-tabs.ed-overflow { padding: 4px 12px; }
+.ed-overflow > button, .ed-overflow-measure > button { flex: 0 0 auto; }
+.ed-tabs.ed-overflow button { min-width: 68px; padding: 8px 6px; white-space: nowrap; }
+.ed-overflow-measure { position: absolute; display: flex; align-items: center; gap: 6px; width: max-content; visibility: hidden; pointer-events: none; top: 0; left: 0; }
+.ed-overflow-select { flex: 0 0 132px; width: 132px; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid #555; border-radius: 10px; background: #242424; color: var(--ed-text); font: inherit; font-size: 13px; text-overflow: ellipsis; }
+.ed-overflow-select.selected { border-color: var(--ed-accent); color: var(--ed-accent); }
+.ed-erase-layer { position: absolute; inset: 0; touch-action: none; cursor: crosshair; overflow: hidden; }
+.ed-erase-selection { position: absolute; border: 2px dashed var(--ed-accent); background: #8fa3ff33; box-sizing: border-box; pointer-events: none; }
+@media (max-width: 379px) {
+  .ed-top { grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px; }
+  .ed-history { grid-row: 1; grid-column: 2; justify-content: center; }
+  .ed-history .ed-icon { width: 34px; }
+  .ed-save { grid-row: 1; grid-column: 3; }
+  .ed-top .ed-primary { padding: 0 12px; }
+}
+
+/* The preview and the active controls share the viewport without scrolling. */
+.editor[open] { grid-template-rows: auto minmax(64px, 1fr) auto; }
+.ed-panel { height: auto; }
+.ed-tool { flex: none; overflow: visible; padding: 10px 0; gap: 8px; }
+.ed-text-tools, .ed-background-tools { gap: 8px; padding-bottom: 0; }
+.ed-text-tools label, .ed-background-tools label, .ed-setting-label { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 4px; font-size: 12px; color: var(--ed-muted); }
+.ed-text-tools textarea { height: 44px; min-height: 44px; padding: 8px; overflow-y: auto; }
+.ed-setting-picker { display: grid; grid-template-columns: minmax(100px, .85fr) minmax(0, 1.4fr); align-items: start; gap: 12px; min-width: 0; }
+.ed-setting-value { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ed-setting-value .ed-slider { padding: 0; }
+.ed-setting-value .ed-slider-head { gap: 4px; margin-bottom: 0; font-size: 12px; }
+.ed-setting-picker select, .ed-background-tools select, .ed-background-tools input[type=file] { width: 100%; min-width: 0; min-height: 44px; padding: 6px; border: 1px solid var(--ed-line); border-radius: 8px; color: var(--ed-text); background: var(--ed-bg); font: inherit; }
+.ed-setting-value input[type=color] { width: 100%; height: 44px; padding: 4px; border: 1px solid var(--ed-line); border-radius: 8px; background: var(--ed-bg); }
+.ed-background-fill { display: flex; flex-direction: column; gap: 6px; }
+.ed-background-tools > .ed-primary { align-self: flex-start; }
+.ed-background-tools .ed-hint, .ed-hint { padding-top: 0; font-size: 12px; line-height: 1.35; }
+.ed-tool[data-tool=eraser] .ed-background-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ed-tool[data-tool=eraser] .ed-background-actions .ed-primary { grid-column: 1 / -1; justify-content: center; }
+.ed-tool[data-tool=eraser] .ed-ratio { padding: 0 6px; font-size: 12px; }
+.ed-crop-help { margin: 0; padding: 0 16px; gap: 8px; }
+.ed-crop-help p { font-size: 11px; line-height: 1.3; }
+.ed-overflow-measure { contain: layout; }
+@media (min-width: 900px), (min-width: 640px) and (max-height: 540px) {
+  .editor[open] { grid-template-rows: auto minmax(0, 1fr); }
+  .ed-panel { height: 100%; justify-content: space-between; }
+  .ed-tool { padding: 12px 0; }
+}
+@media (max-height: 480px) {
+  .ed-top { padding-top: 2px; padding-bottom: 2px; }
+  .ed-tool { padding: 6px 0; gap: 4px; }
+  .ed-tabs.ed-overflow button { min-height: 44px; padding: 4px 6px; }
+  .ed-text-tools, .ed-background-tools { gap: 4px; }
+  .ed-tool[data-tool=eraser] .ed-background-tools > .ed-hint:first-child { display: none; }
+  .ed-text-tools > label { flex-direction: row; align-items: center; }
+  .ed-text-tools > label input, .ed-text-tools > label textarea { flex: 1; min-width: 0; }
+  .ed-history { display: flex; }
+  .ed-top { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .ed-history { grid-column: 2; grid-row: 1; justify-content: center; }
+  .ed-save { grid-column: 3; grid-row: 1; }
+  .ed-history .ed-icon { width: 32px; height: 40px; }
+}

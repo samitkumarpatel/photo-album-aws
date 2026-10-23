@@ -66,6 +66,7 @@ export const DEFAULT_EDIT = Object.freeze({
   background: { on: false, fill: 'transparent', color: '#ffffff', blur: 30, asset: '', strokes: [] },
   watermark: { value: '', size: 3, opacity: 60, color: '#ffffff', position: 'bottom-right' },
   export: { maxSide: 0 },
+  erasures: [],
 })
 
 export const sameEdit = (a, b) => JSON.stringify(a) === JSON.stringify(b)
@@ -77,6 +78,7 @@ export function normalizeEdit(value = {}) {
   delete result.baseVersion
   delete result.background.maskData
   result.background.strokes = Array.isArray(result.background.strokes) ? result.background.strokes : []
+  result.erasures = Array.isArray(result.erasures) ? result.erasures.filter(points => Array.isArray(points) && points.length === 4 && points.every(point => Array.isArray(point) && point.length === 2 && point.every(v => Number.isFinite(v) && v >= 0 && v <= 1))) : []
   return result
 }
 
@@ -383,6 +385,19 @@ export function render(canvas, source, width, height, edit, params, mode = 'fina
     ctx.fillText(mark.value, left ? size : canvas.width - size, top ? size : canvas.height - size, canvas.width * 0.9)
     ctx.restore()
   }
+  if (edit.erasures?.length) {
+    const mask = document.createElement('canvas'); mask.width = width; mask.height = height
+    const mctx = mask.getContext('2d')
+    mctx.fillStyle = '#fff'
+    for (const points of edit.erasures) {
+      mctx.beginPath()
+      points.forEach(([x, y], i) => i ? mctx.lineTo(x * width, y * height) : mctx.moveTo(x * width, y * height))
+      mctx.closePath(); mctx.fill()
+    }
+    ctx.save(); ctx.globalCompositeOperation = 'destination-out'
+    drawTransformed(ctx, mask, width, height, edit, region.x, region.y)
+    ctx.restore()
+  }
   return canvas
 }
 
@@ -402,7 +417,7 @@ export function scaledCopy(image, maxSide) {
 /** Full-resolution export, capped to a pixel budget that mobile browsers can handle. */
 export async function exportBlob(image, edit, params, type, backgroundMask = null, backgroundImage = null) {
   if (edit.background?.on && !backgroundMask) throw new Error('Remove the background before saving.')
-  if (edit.background?.on && edit.background.fill === 'transparent' && type !== 'image/png')
+  if ((edit.erasures?.length || (edit.background?.on && edit.background.fill === 'transparent')) && type !== 'image/png')
     throw new Error('Save a transparent background as PNG.')
   const MAX_PIXELS = 16_000_000
   const width = image.naturalWidth, height = image.naturalHeight

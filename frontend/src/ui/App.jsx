@@ -113,30 +113,36 @@ function Menu({ label, icon, items, align = 'right', className = 'icon-button' }
   const root = useRef(null)
   const button = useRef(null)
   const popover = useRef(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return
     const outside = e => { if (!root.current?.contains(e.target)) setOpen(false) }
     const key = e => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false); button.current?.focus() } }
     document.addEventListener('pointerdown', outside)
     document.addEventListener('keydown', key)
-    root.current.querySelector('[role^="menuitem"]')?.focus()
     const position = () => {
       const menu = popover.current
       if (!menu || !root.current) return
-      const anchor = root.current.getBoundingClientRect(), bounds = menu.getBoundingClientRect()
+      const anchor = root.current.getBoundingClientRect()
+      // Layout dimensions stay stable while the opening animation translates and scales the menu.
+      const width = menu.offsetWidth, height = menu.offsetHeight
       const viewportTop = window.visualViewport?.offsetTop || 0
       const viewportBottom = viewportTop + (window.visualViewport?.height || window.innerHeight)
-      const left = align === 'center' ? anchor.left + (anchor.width - bounds.width) / 2 : anchor.right - bounds.width
+      const left = align === 'center' ? anchor.left + (anchor.width - width) / 2 : anchor.right - width
+      const below = anchor.bottom + 8
+      const top = below + height <= viewportBottom - 8 ? below : anchor.top - height - 8
       menu.style.translate = 'none'
       menu.style.right = 'auto'
-      menu.style.left = Math.max(12, Math.min(left, window.innerWidth - bounds.width - 12)) - anchor.left + 'px'
-      menu.style.top = Math.max(viewportTop + 8, Math.min(anchor.bottom + 8, viewportBottom - bounds.height - 8)) - anchor.top + 'px'
+      menu.style.left = Math.max(12, Math.min(left, window.innerWidth - width - 12)) - anchor.left + 'px'
+      menu.style.top = Math.max(viewportTop + 8, Math.min(top, viewportBottom - height - 8)) - anchor.top + 'px'
     }
     position()
+    root.current.querySelector('[role^="menuitem"]')?.focus({ preventScroll: true })
     window.addEventListener('resize', position)
+    window.visualViewport?.addEventListener('resize', position)
+    window.visualViewport?.addEventListener('scroll', position)
     document.addEventListener('scroll', position, true)
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', position); document.removeEventListener('scroll', position, true) }
-  }, [open])
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', position); window.visualViewport?.removeEventListener('resize', position); window.visualViewport?.removeEventListener('scroll', position); document.removeEventListener('scroll', position, true) }
+  }, [open, align])
   function arrows(e) {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
     e.preventDefault()
@@ -594,7 +600,7 @@ function PhotoLibrary() {
     <GalleryControls selection={selection} filters={filters} items={items} />
     <ErrorNotice message={error} retry={refresh} />
     {loading ? <PageLoader label="Loading your photos…" />
-      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} onFavorite={favorite} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
+      : filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
       : error ? null
       : <Empty title={items.length ? 'Nothing matches' : 'Make room for your moments'} description={items.length ? 'Try a different filter or search.' : 'Upload photos and videos, or drop them anywhere on this page.'}>
           <button className="button primary" onClick={items.length ? () => { filters.setType('all'); filters.setFavoritesOnly(false); setQuery('') } : () => uploadMedia()}>{items.length ? 'Reset filters' : <><Upload size={18} />Upload photos</>}</button>
@@ -642,7 +648,7 @@ function ThumbnailMedia({ item, src, quiet }) {
   return <>{spinner}<img ref={imgRef} className={(loaded ? 'loaded' : '') + (aspect ? ' sized' : '')} style={aspect} src={src} alt={item.filename} loading="lazy" decoding="async" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} /></>
 }
 
-function MediaTile({ item, index, onOpen, onDelete, selection, isCover, onFavorite }) {
+function MediaTile({ item, index, onOpen, onDelete, selection, isCover }) {
   const press = useRef(null)
   const suppressClick = useRef(false)
   const clearPress = () => {
@@ -692,15 +698,14 @@ function MediaTile({ item, index, onOpen, onDelete, selection, isCover, onFavori
       <span className="media-label">{item.filename}</span>
       {isCover && <span className="cover-badge"><Star size={12} fill="currentColor" aria-hidden="true" />Cover</span>}
     </button>
-    {onFavorite && !selection?.enabled && open && <button className={'tile-favorite' + (item.favorite ? ' favorite' : '')} aria-label={(item.favorite ? 'Remove from favorites: ' : 'Add to favorites: ') + item.filename} aria-pressed={!!item.favorite} onClick={() => onFavorite(item)}><Heart size={18} fill={item.favorite ? 'currentColor' : 'none'} /></button>}
     {selectable && selection.enabled && <button className="tile-select" role="checkbox" aria-checked={!!selected} aria-label={(selected ? 'Deselect ' : 'Select ') + item.filename} onClick={() => selection.select(item.id)}>
       <span className="selection-check" aria-hidden="true">{selected && <Check size={18} />}</span>
     </button>}
   </div>
 }
 
-function MediaGroups({ items, onOpen, onDelete, selection, coverId, onFavorite, groupBy = 'uploadedAt' }) {
-  const renderTile = (item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} isCover={item.id === coverId} onFavorite={onFavorite} />
+function MediaGroups({ items, onOpen, onDelete, selection, coverId, groupBy = 'uploadedAt' }) {
+  const renderTile = (item, i) => <MediaTile key={item.id} item={item} index={i} onOpen={onOpen} onDelete={onDelete} selection={selection} isCover={item.id === coverId} />
   if (!groupBy) return <JustifiedGallery items={items} render={renderTile} />
   const groups = items.reduce((all, item) => {
     const date = new Date(item[groupBy] || item.uploadedAt).toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' })
@@ -885,7 +890,7 @@ function AlbumPage() {
           </AlbumHeader>
           <ErrorNotice message={state.error} retry={state.retry} />
           <GalleryControls selection={selection} filters={filters} items={items} />
-          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} coverId={coverId} onFavorite={favorite} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
+          {filters.filtered.length ? <MediaGroups items={filters.filtered} onOpen={item => setParams({ media: item.id })} onDelete={setDeleting} selection={selection} coverId={coverId} groupBy={['custom', 'filename'].includes(filters.sort) ? null : filters.sort === 'captured' ? 'takenAt' : 'uploadedAt'} />
             : items.length ? <Empty icon={Search} title="Nothing matches" description="Try a different search or filter."><button className="button secondary" onClick={() => { setQuery(''); filters.setType('all'); filters.setFavoritesOnly(false) }}>Reset filters</button></Empty>
             : <button className="drop-hint" onClick={() => uploadMedia(albumId)}><ImagePlus size={34} /><strong>Add the first photos</strong><span>Tap to choose, or drag files anywhere on this page</span></button>}
         </>
@@ -1688,7 +1693,7 @@ function Viewer({ items, current, onChange, close, onDelete, onEdit, onHistory, 
       <button className="icon-button" aria-label="Close viewer" onClick={close}><X size={22} /></button>
       <div className="viewer-title"><strong>{current.filename}</strong><span>{date} · {index + 1} of {items.length}</span></div>
       <div className="viewer-actions">
-        {onFavorite && <button className="icon-button" aria-label={current.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!current.favorite} onClick={onFavorite}><Heart size={20} fill={current.favorite ? 'currentColor' : 'none'} /></button>}
+        {onFavorite && <button className="icon-button viewer-favorite" aria-label={current.favorite ? 'Remove from favorites' : 'Add to favorites'} title={current.favorite ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={!!current.favorite} onClick={onFavorite}><Heart size={20} fill={current.favorite ? 'currentColor' : 'none'} /></button>}
         {onCover && <button className={'icon-button viewer-secondary-action' + (isCover ? ' is-cover' : '')} aria-label={isCover ? 'This is the album cover' : 'Set as album cover'} title={isCover ? 'Album cover' : 'Set as album cover'} aria-pressed={isCover} disabled={isCover} onClick={onCover}><Star size={20} fill={isCover ? 'currentColor' : 'none'} /></button>}
         {onHistory && !video && <button className="icon-button viewer-secondary-action" aria-label="Photo edit history" onClick={onHistory}><Clock3 size={20} /></button>}
         {!video && statusOf(current) === 'READY' && <button className="icon-button viewer-secondary-action" aria-label="Creative effects" title="Creative effects" onClick={() => setCreativePhoto(current)}><Sparkles size={20} /></button>}

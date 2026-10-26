@@ -827,6 +827,12 @@ main:has(.selection-bar) { padding-bottom: calc(180px + env(safe-area-inset-bott
 
 /* Compact share links, with the same controls on desktop and mobile. */
 .share-settings-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.share-view-toggle { display: flex; gap: 8px; padding: 4px; margin: 0 0 20px; border-radius: 999px; background: var(--bg); }
+.share-view-toggle .chip { flex: 1; justify-content: center; }
+.share-history-group { margin: 18px 0 24px; }
+.share-history-group h3 { margin: 0 0 6px; font-size: 16px; }
+.share-link-row > .share-link-status { grid-column: 1 / -1; display: block; color: var(--success); font-size: 13px; font-weight: 650; line-height: 1.5; }
+.share-link-row > .share-link-status.inactive { color: var(--muted); }
 .share-create { margin-bottom: 20px; }
 .share-create h3 { margin: 0 0 12px; font-size: 16px; }
 .share-create .field-label { margin-top: 0; }

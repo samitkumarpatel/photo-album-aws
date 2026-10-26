@@ -7,6 +7,7 @@ import { createDepthRenderer } from './depthRenderer.js'
 import { cinematicPose, downloadBlob, generateDepth, generatePersonMask, imageBlob, recordCanvas, videoFormat } from './creativeMedia.js'
 import { createFocusRenderer, createPopoutRenderer, createSelectiveColorRenderer, createLivingRenderer } from './creativeEffects.js'
 import { usePaintMask } from './usePaintMask.js'
+import ScrollHints from '../ScrollHints.jsx'
 import './creativeStudio.css'
 
 const EFFECTS = [['cinematic', 'Cinematic animation'], ['focus', 'Tap to focus'], ['popout', 'Pop-out photo'], ['selective', 'Selective color'], ['living', 'Living photo']]
@@ -157,17 +158,18 @@ export default function CreativeStudio({ item, Dialog, close, onSaved }) {
   }
   const requestClose = () => { if (busy === 'save') return; operation.current?.abort(); close() }
   return <Dialog title="Creative effects" description="Make something new from your photo. Your original stays unchanged." close={requestClose} busy={busy === 'save'} wide>
-    <div className="creative-modes" role="group" aria-label="Creative effect">{EFFECTS.map(([id, label]) => <button className={'button ' + (mode === id ? 'primary' : 'secondary')} aria-pressed={mode === id} disabled={!!busy} key={id} onClick={() => { setMode(id); setPlaying(false); setError('') }}>{label}</button>)}</div>
+    <ScrollHints className="creative-modes" role="group" aria-label="Creative effects">{EFFECTS.map(([id, label]) => <button className={'button ' + (mode === id ? 'primary' : 'secondary')} aria-pressed={mode === id} disabled={!!busy} key={id} onClick={() => { setMode(id); setPlaying(false); setError('') }}>{label}</button>)}</ScrollHints>
     {error && <p role="alert">{error}</p>}
     {message && <p role="status" aria-live="polite">{message}</p>}
     {!photo && !busy && <button className="button secondary" onClick={() => setRetry(n => n + 1)}>Retry photo</button>}
-    {photo && <>
+    {photo && <div className="creative-workspace">
       <div className="creative-preview">
         {!ready && <img src={photoUrl} alt={item.filename} />}
         <canvas ref={canvas} key={mode} hidden={!ready} role="img" aria-label={mode === 'focus' ? 'Tap photo to choose focus' : mode === 'popout' ? 'Pop-out photo preview. Paint to select the subject.' : mode === 'selective' ? 'Paint the part of the photo to keep in color.' : mode === 'living' ? 'Paint the area to animate.' : 'Cinematic photo preview'}
           onPointerDown={e => { if (busy) return; if ((mode === 'popout' && editMask) || mode === 'selective' || mode === 'living') painter.start(e, brushSize, erase); else chooseFocus(e) }}
           onPointerMove={e => { if (!busy && ((mode === 'popout' && editMask) || mode === 'selective' || mode === 'living')) painter.move(e) }} onPointerUp={painter.end} onPointerCancel={painter.end} />
       </div>
+      <div className="creative-settings">
       {needsDepth && !depth && <><p>Generate depth on your device for this effect. First use downloads an AI model; your photo stays on your device.</p><button className="button primary" disabled={!!busy} onClick={prepareDepth}>Generate depth</button></>}
       {depth && mode === 'cinematic' && <fieldset className="creative-controls" disabled={!!busy}><legend>Cinematic animation</legend>
         <label>Camera movement<select value={path} onChange={e => setPath(e.target.value)}><option value="orbit">Gentle orbit</option><option value="pan">Side to side</option><option value="push">Slow zoom</option></select></label>
@@ -216,7 +218,8 @@ export default function CreativeStudio({ item, Dialog, close, onSaved }) {
       {clip && <section className="creative-result" aria-label="Created video"><h3>Your {clip.mode} video</h3>{clipUrl && <video src={clipUrl} controls loop playsInline />}
         <div className="creative-actions"><button className="button secondary" disabled={!!busy} onClick={() => downloadBlob(clip.blob, clipName)}>Download video</button>{onSaved && <button className="button primary" disabled={!!busy || saved} onClick={saveClip}>{saved ? 'Saved to album' : 'Save video to album'}</button>}</div>
       </section>}
-    </>}
+      </div>
+    </div>}
     <div className="creative-actions">{busy && busy !== 'load' && busy !== 'save' && <button className="button secondary" onClick={() => operation.current?.abort()}>Cancel {busy === 'record' ? 'recording' : 'generation'}</button>}<button className="button secondary" disabled={busy === 'save'} onClick={requestClose}>Close</button></div>
   </Dialog>
 }

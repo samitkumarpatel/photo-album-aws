@@ -938,13 +938,15 @@ function Dialog({ title, description, close, busy = false, children, wide = fals
     onCancel={e => { e.preventDefault(); if (!busy) close() }}
     onClick={e => { if (e.target === e.currentTarget && !busy) close() }}>
     <div className="dialog-body" onFocusCapture={event => {
-      const body = event.currentTarget, preview = body.querySelector('.collage-preview:has(canvas)')
+      const body = event.currentTarget, preview = body.querySelector('.collage-preview:has(canvas), .creative-preview')
       if (!preview || preview.contains(event.target)) return
       const target = event.target.closest('label') || event.target
       if (!(preview.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING)) return
       requestAnimationFrame(() => {
         if (!target.isConnected) return
         const bounds = target.getBoundingClientRect(), image = preview.getBoundingClientRect()
+        // A preview beside the controls cannot cover them vertically.
+        if (bounds.left >= image.right || bounds.right <= image.left || getComputedStyle(preview).position !== 'sticky') return
         const bottom = Math.min(body.getBoundingClientRect().bottom, window.visualViewport?.height || window.innerHeight) - 12
         if (bounds.top < image.bottom + 12) body.scrollTop -= image.bottom + 12 - bounds.top
         else if (bounds.bottom > bottom) body.scrollTop += bounds.bottom - bottom
@@ -1338,7 +1340,7 @@ function ShareDialog({ album, close, notify, onChanged }) {
   const [unit, setUnit] = useState('WEEKS')
   const [custom, setCustom] = useState(false)
   const [share, setShare] = useState(null)
-  const [creating, setCreating] = useState(false)
+  const [shareView, setShareView] = useState('new')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(null)
@@ -1349,23 +1351,26 @@ function ShareDialog({ album, close, notify, onChanged }) {
   const [editing, setEditing] = useState(null)
   const linkInputs = useRef(new Map())
   const locked = busy || !!revoking || !!editing
-  const visibleLinks = (links || []).filter(link => new Date(link.expiresAt).getTime() > Date.now())
+  const visibleLinks = (links || []).filter(link => !link.revokedAt && new Date(link.expiresAt).getTime() > Date.now())
+  const inactiveLinks = (links || []).filter(link => link.revokedAt || new Date(link.expiresAt).getTime() <= Date.now())
   const loadLinks = useCallback(async () => {
     setLinksLoading(true); setLinksError('')
     try {
-      const loaded = await api('/api/albums/' + album.id + '/shares')
+      const loaded = await api('/api/albums/' + album.id + '/shares/history')
       setLinks(loaded)
-      if (!loaded.some(link => new Date(link.expiresAt).getTime() > Date.now())) setCreating(true)
     }
     catch (error) { setLinksError(error.message) }
     finally { setLinksLoading(false) }
   }, [album.id])
   useEffect(() => { loadLinks() }, [loadLinks])
+  useEffect(() => {
+    if (shareView === 'history' && share && !busy) linkInputs.current.get(share.token)?.focus()
+  }, [shareView, share?.token, busy])
   async function create(event) {
     event.preventDefault(); setBusy(true); setError('')
     try {
       const created = await api('/api/albums/' + album.id + '/shares', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(amount), unit }) })
-      setShare(created); setCreating(false); setCopied(null)
+      setShare(created); setShareView('history'); setCopied(null)
       setLinks(previous => [...(previous || []), created])
       await onChanged?.()
     } catch (error) { setError(error.message) }
@@ -1375,9 +1380,8 @@ function ShareDialog({ album, close, notify, onChanged }) {
     setRevoking(token); setError('')
     try {
       await api('/api/albums/' + album.id + '/shares/' + token, { method: 'DELETE' })
-      setLinks(previous => (previous || []).filter(link => link.token !== token))
+      setLinks(previous => (previous || []).map(link => link.token === token ? { ...link, revokedAt: new Date().toISOString() } : link))
       if (share?.token === token) setShare(null)
-      if (visibleLinks.length === 1) setCreating(true)
       setCopied(null); notify('Link revoked'); await onChanged?.()
     } catch (error) { setError(error.message) }
     finally { setRevoking(null) }
@@ -1392,9 +1396,27 @@ function ShareDialog({ album, close, notify, onChanged }) {
     setShare(previous => previous?.token === updated.token ? updated : previous)
     notify('Link settings saved'); await onChanged?.()
   }
+  function renderShareLinks(items, inactive = false) {
+    return items.map(link => {
+      const url = shareUrl(link.token), name = link.label || 'Share link'
+      return <li key={link.token} className={'share-link-row' + (share?.token === link.token ? ' share-link-new' : '')}>
+        <div className="share-link-url">
+          <input className="share-link-address" ref={input => { if (input) linkInputs.current.set(link.token, input); else linkInputs.current.delete(link.token) }} value={url} readOnly aria-label={'Link for ' + name} onFocus={event => event.target.select()} />
+          {!inactive && <button type="button" className="share-copy" disabled={locked} aria-label={copied === url ? 'Link copied' : 'Copy link'} title={copied === url ? 'Copied' : 'Copy link'} onClick={() => copy(url, linkInputs.current.get(link.token))}>{copied === url ? <Check size={20} aria-hidden="true" /> : <Copy size={20} aria-hidden="true" />}</button>}
+        </div>
+        <span className={'share-link-status' + (inactive ? ' inactive' : '')}>{link.revokedAt ? 'Revoked' : inactive ? 'Expired' : 'Active'} · {!inactive && 'Expires '}<time dateTime={link.revokedAt || link.expiresAt}>{new Date(link.revokedAt || link.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time></span>
+        {!inactive && <button type="button" className="button secondary share-revoke" disabled={locked} onClick={() => revoke(link.token)}>{revoking === link.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}{revoking === link.token ? 'Revoking…' : 'Revoke'}</button>}
+        {!inactive && <ShareLinkSettings link={link} album={album} disabled={locked} onBusyChange={setEditing} onSaved={saved} />}
+      </li>
+    })
+  }
   return <Dialog title="Share album" description={album.name} close={close} busy={locked} wide>
     <ErrorNotice message={error} />
-    {creating && !share && <section className="share-create"><h3>Create a link</h3><form onSubmit={create}>
+    <div className="share-view-toggle" role="group" aria-label="Share album options">
+      <button type="button" disabled={locked} aria-pressed={shareView === 'new'} className={'chip' + (shareView === 'new' ? ' selected' : '')} onClick={() => { setShareView('new'); setShare(null); setError('') }}>New link</button>
+      <button type="button" disabled={locked} aria-pressed={shareView === 'history'} className={'chip' + (shareView === 'history' ? ' selected' : '')} onClick={() => { setShareView('history'); setError('') }}>Link history</button>
+    </div>
+    {shareView === 'new' && <section className="share-create"><h3>Create a link</h3><form onSubmit={create}>
       <fieldset className="share-settings-fields" disabled={locked}>
         <p className="field-label" id="expiry-label">Link expires after</p>
         <div className="chip-row" role="group" aria-labelledby="expiry-label">
@@ -1408,27 +1430,18 @@ function ShareDialog({ album, close, notify, onChanged }) {
           <label>Amount<input required type="number" inputMode="numeric" min="1" max="365" value={amount} onChange={event => setAmount(event.target.value)} /></label>
           <label>Unit<select value={unit} onChange={event => setUnit(event.target.value)}>{units.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         </fieldset>}
-        <div className="dialog-actions"><button className="button primary" disabled={locked}>{busy ? <CameraSpinner size={20} inherit decorative /> : <Share2 size={18} />}{busy ? 'Creating…' : 'Create link'}</button></div>
+        <div className="dialog-actions"><button className="button primary" disabled={locked || linksLoading}>{busy ? <CameraSpinner size={20} inherit decorative /> : <Share2 size={18} />}{busy ? 'Creating…' : 'Create link'}</button></div>
       </fieldset>
     </form></section>}
-    <section className="share-links" aria-label="Active share links">
+    {shareView === 'history' && <section className="share-links" aria-label="Share link history">
       {linksLoading && <p className="share-loading" role="status"><CameraSpinner size={20} inherit decorative />Loading links…</p>}
       <ErrorNotice message={linksError} retry={loadLinks} />
+      {share && <p role="status">Link created. Copy it to share this album.</p>}
       {!linksLoading && !linksError && !visibleLinks.length && <p className="dialog-description">No active links. This album is private.</p>}
-      {!!visibleLinks.length && <ul>{visibleLinks.map(link => {
-        const url = shareUrl(link.token), name = link.label || 'Share link'
-        return <li key={link.token} className={'share-link-row' + (share?.token === link.token ? ' share-link-new' : '')}>
-          <div className="share-link-url">
-            <input className="share-link-address" ref={input => { if (input) linkInputs.current.set(link.token, input); else linkInputs.current.delete(link.token) }} value={url} readOnly aria-label={'Link for ' + name} onFocus={event => event.target.select()} />
-            <button type="button" className="share-copy" disabled={locked} aria-label={copied === url ? 'Link copied' : 'Copy link'} title={copied === url ? 'Copied' : 'Copy link'} onClick={() => copy(url, linkInputs.current.get(link.token))}>{copied === url ? <Check size={20} aria-hidden="true" /> : <Copy size={20} aria-hidden="true" />}</button>
-          </div>
-          <button type="button" className="button secondary share-revoke" disabled={locked} onClick={() => revoke(link.token)}>{revoking === link.token ? <CameraSpinner size={16} inherit decorative /> : <Trash2 size={16} />}{revoking === link.token ? 'Revoking…' : 'Revoke'}</button>
-          <ShareLinkSettings link={link} album={album} disabled={locked} onBusyChange={setEditing} onSaved={saved} />
-        </li>
-      })}</ul>}
-    </section>
+      {!!visibleLinks.length && <div className="share-history-group"><h3>Active links</h3><ul>{renderShareLinks(visibleLinks)}</ul></div>}
+      {!!inactiveLinks.length && <div className="share-history-group"><h3>Inactive links</h3><ul>{renderShareLinks(inactiveLinks, true)}</ul></div>}
+    </section>}
     <div className="dialog-actions share-footer">
-      {!creating && <button className="button secondary" disabled={locked || linksLoading} onClick={() => { setShare(null); setCreating(true); setCopied(null); setError('') }}><Plus size={18} />New link</button>}
       <button className="button secondary" disabled={locked} onClick={close}>Done</button>
     </div>
   </Dialog>

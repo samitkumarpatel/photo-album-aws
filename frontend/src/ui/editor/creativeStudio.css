@@ -1,4 +1,6 @@
 .creative-modes, .creative-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.creative-modes { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; padding-block: 4px; }
+.creative-modes > .button { flex: none; white-space: nowrap; }
 .creative-modes .button { font-size: 13px; padding: 9px 12px; }
 .creative-preview { display: flex; position: relative; justify-content: center; align-items: center; overflow: hidden; background: #151719; border-radius: 12px; margin: 16px 0; }
 .creative-preview canvas, .creative-preview img { display: block; max-width: 100%; max-height: 45vh; width: auto; height: auto; object-fit: contain; touch-action: none; }
@@ -13,3 +15,22 @@
 .creative-controls p { font-size: 13px; line-height: 1.5; }
 .creative-result { border-top: 1px solid #8884; margin-top: 20px; padding-top: 12px; }
 .creative-result video { display: block; max-width: 100%; max-height: 40vh; margin: auto; }
+
+.creative-workspace, .creative-settings { min-width: 0; }
+
+/* Short tablet/laptop windows keep a compact preview above the controls. */
+@media (min-width: 600px) and (max-width: 899px) {
+  .dialog:has(.creative-workspace) .dialog-body { scroll-padding-top: calc(min(32dvh, 280px) + 24px); }
+  .creative-preview { position: sticky; top: 0; z-index: 2; }
+  .creative-preview canvas, .creative-preview img { max-height: min(32dvh, 280px); }
+}
+
+/* Wide windows use the width to keep a larger live preview beside the controls. */
+@media (min-width: 900px), (min-width: 640px) and (max-height: 540px) {
+  .dialog-wide:has(.creative-workspace) { width: min(1080px, calc(100% - 40px)); }
+  .dialog:has(.creative-workspace) .dialog-body { scroll-padding-top: 12px; }
+  .creative-workspace { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  .creative-preview { position: sticky; top: 0; z-index: 2; margin: 0; }
+  .creative-preview canvas, .creative-preview img { max-height: calc(var(--dialog-viewport-height, 100dvh) * .7); }
+  .creative-controls { margin-top: 0; }
+}

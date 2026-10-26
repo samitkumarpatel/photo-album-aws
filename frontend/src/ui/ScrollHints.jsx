@@ -24,11 +24,19 @@ export default function ScrollHints({ as: Tag = 'div', className = '', children,
     node.addEventListener('scroll', measure, { passive: true })
     return () => { observer.disconnect(); node.removeEventListener('scroll', measure) }
   }, [children])
-  const scroll = direction => ref.current?.scrollBy({ left: direction * ref.current.clientWidth * .7, behavior: 'smooth' })
+  const scroll = direction => ref.current?.scrollBy({ left: direction * ref.current.clientWidth * .7, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  const revealFocused = event => {
+    props.onFocusCapture?.(event)
+    const node = ref.current, button = event.target.closest('button')
+    if (!node || !button || node.scrollWidth <= node.clientWidth) return
+    const row = node.getBoundingClientRect(), bounds = button.getBoundingClientRect()
+    if (bounds.left < row.left + 4) node.scrollLeft -= row.left + 4 - bounds.left
+    else if (bounds.right > row.right - 4) node.scrollLeft += bounds.right - row.right + 4
+  }
   const label = props['aria-label'] || 'options'
   const edges = state.overflow ? (state.start ? '' : ' fade-start') + (state.end ? '' : ' fade-end') : ''
   return <div className={'scroll-hints' + (state.overflow ? ' has-overflow' : '')}>
-    <Tag ref={ref} className={className + edges} {...props}>{children}</Tag>
+    <Tag ref={ref} className={className + edges} {...props} onFocusCapture={revealFocused}>{children}</Tag>
     {state.overflow && <>
       <button type="button" className="scroll-hint start" aria-label={'Scroll ' + label + ' left'} disabled={state.start} onClick={() => scroll(-1)}><ChevronLeft size={18} aria-hidden="true" /></button>
       <button type="button" className="scroll-hint end" aria-label={'Scroll ' + label + ' right'} disabled={state.end} onClick={() => scroll(1)}><ChevronRight size={18} aria-hidden="true" /></button>

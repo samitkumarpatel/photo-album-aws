@@ -364,7 +364,9 @@ public class AlbumController {
         ShareDetails details = shareDetails(request.label(), request.recipient(), "");
         repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
         repository.saveShare(token, new Share(albumId, expiresAt));
-        return new ShareResponse(token, expiresAt, details.label(), details.recipient());
+        ShareResponse response = new ShareResponse(token, expiresAt, details.label(), details.recipient());
+        rememberShare(albumId, response, null);
+        return response;
     }
 
     /** Active links, soonest expiry first. Recipient emails label invitations; links remain bearer links. */
@@ -379,11 +381,36 @@ public class AlbumController {
                 .toList();
     }
 
+    /** Owner-only history is album metadata, independent of the expiring access tokens. */
+    @GetMapping("/{albumId}/shares/history")
+    public List<ShareHistoryResponse> shareHistory(@PathVariable UUID albumId) {
+        requireAlbum(albumId);
+        Map<String, ShareHistoryResponse> entries = new HashMap<>();
+        repository.listMetadata(albumId, "SHARE_HISTORY#").values().forEach(json -> {
+            ShareHistoryResponse entry = PhotoHistory.JSON.readValue(json, ShareHistoryResponse.class);
+            entries.put(entry.token(), entry);
+        });
+        // Include links created before history was introduced, while their token rows still exist.
+        for (ShareSummary summary : repository.listShares(albumId)) {
+            ShareResponse link = shareResponse(albumId, summary.token(), summary.expiresAt());
+            entries.put(link.token(), new ShareHistoryResponse(link.token(), link.expiresAt(), link.label(), link.recipient(), null));
+        }
+        return entries.values().stream()
+                .sorted(Comparator.comparing(ShareHistoryResponse::expiresAt).reversed().thenComparing(ShareHistoryResponse::token))
+                .toList();
+    }
+
+    private void rememberShare(UUID albumId, ShareResponse link, Instant revokedAt) {
+        repository.putMetadata(albumId, "SHARE_HISTORY#" + link.token(), PhotoHistory.JSON.writeValueAsString(
+                new ShareHistoryResponse(link.token(), link.expiresAt(), link.label(), link.recipient(), revokedAt)));
+    }
+
     @DeleteMapping("/{albumId}/shares/{token}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void revokeShare(@PathVariable UUID albumId, @PathVariable String token) {
         requireAlbum(albumId);
-        repository.findShare(token).filter(s -> s.albumId().equals(albumId)).orElseThrow(AlbumController::shareNotFound);
+        Share current = repository.findShare(token).filter(s -> s.albumId().equals(albumId)).orElseThrow(AlbumController::shareNotFound);
+        rememberShare(albumId, shareResponse(albumId, token, current.expiresAt()), Instant.now());
         repository.deleteShare(token);
         repository.deleteMetadata(albumId, "SHARE#" + token);
     }
@@ -414,7 +441,9 @@ public class AlbumController {
         ShareDetails details = shareDetails(request.label(), request.recipient(), shareResponse(albumId, token, current.expiresAt()).recipient());
         repository.putMetadata(albumId, "SHARE#" + token, PhotoHistory.JSON.writeValueAsString(details));
         repository.saveShare(token, new Share(albumId, request.expiresAt()));
-        return shareResponse(albumId, token, request.expiresAt());
+        ShareResponse response = shareResponse(albumId, token, request.expiresAt());
+        rememberShare(albumId, response, null);
+        return response;
     }
 
     /** A shared album shows only photos that finished uploading and passed processing; URLs expire with the link. */
@@ -669,6 +698,7 @@ public class AlbumController {
     public record ShareResponse(String token, Instant expiresAt, String label, String recipient) {
         public ShareResponse(String token, Instant expiresAt) { this(token, expiresAt, "", ""); }
     }
+    public record ShareHistoryResponse(String token, Instant expiresAt, String label, String recipient, Instant revokedAt) {}
     /** A share link as the repository lists it; unlike {@link Share} it carries its own token. */
     public record ShareSummary(String token, UUID albumId, Instant expiresAt) {}
     public record CreateUpload(String filename, String contentType, Long size, Map<String, Object> editRecipe) {

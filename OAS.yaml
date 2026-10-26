@@ -521,6 +521,34 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
 
+  /api/albums/{albumId}/shares/history:
+    parameters:
+      - $ref: '#/components/parameters/AlbumId'
+    get:
+      tags: [Sharing]
+      operationId: listAlbumShareHistory
+      summary: List active, expired and revoked share links for the owner
+      description: >-
+        History is retained independently of expiring access tokens. Links created before
+        history was introduced are included while their token rows still exist.
+      responses:
+        '200':
+          description: Share link history, latest expiry first. revokedAt is null unless revoked.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ShareHistoryResponse'
+        '404':
+          description: Album not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
   /api/albums/{albumId}/shares/{token}:
     parameters:
       - $ref: '#/components/parameters/AlbumId'
@@ -849,6 +877,18 @@ components:
         expiresAt:
           type: string
           format: date-time
+    ShareHistoryResponse:
+      allOf:
+        - $ref: '#/components/schemas/ShareResponse'
+        - type: object
+          properties:
+            label:
+              type: string
+            recipient:
+              type: string
+            revokedAt:
+              type: [string, 'null']
+              format: date-time
     Problem:
       type: object
       description: Spring Problem Detail response.

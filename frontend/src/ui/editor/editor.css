@@ -295,3 +295,12 @@
   .ed-save { grid-column: 3; grid-row: 1; }
   .ed-history .ed-icon { width: 32px; height: 40px; }
 }
+
+/* Fill the side panel with choices; the main tool navigation stays on one row. */
+@media (min-width: 900px), (min-width: 640px) and (max-height: 540px) {
+  .ed-tool { flex: 1 1 0; min-height: 0; overflow-y: auto; }
+  .ed-strip.ed-overflow { flex-wrap: wrap; gap: 8px; overflow: visible; padding: 6px 12px; }
+  .ed-adjustments.ed-overflow { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 8px; overflow: visible; padding: 6px 12px; }
+  .ed-adjustments .ed-chip { width: auto; min-width: 0; gap: 6px; padding: 6px 2px; font-size: 11px; }
+  .ed-adjustments .ed-chip > span:last-child { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+}

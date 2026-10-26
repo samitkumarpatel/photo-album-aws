@@ -421,6 +421,61 @@ class AlbumControllerTests {
     }
 
     @Test
+    void sharingHistoryRetainsRevokedLinksWithoutRestoringAccess() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var other = controller.createAlbum(new AlbumController.CreateAlbum("Other", null));
+        var link = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS, "Family", ""));
+        Instant later = link.expiresAt().plus(Duration.ofDays(2));
+        controller.updateShare(album.id(), link.token(), new AlbumController.UpdateShare(later, "Friends", null));
+        controller.revokeShare(album.id(), link.token());
+
+        // History survives a new controller instance and is scoped to the owner album.
+        var reopened = controller(new ApiMediaUrlSigner());
+        var entries = reopened.shareHistory(album.id());
+        assertEquals(1, entries.size());
+        assertEquals(link.token(), entries.getFirst().token());
+        assertEquals("Friends", entries.getFirst().label());
+        assertEquals(later, entries.getFirst().expiresAt());
+        assertNotNull(entries.getFirst().revokedAt());
+        assertTrue(reopened.shareHistory(other.id()).isEmpty());
+        assertTrue(reopened.listShares(album.id()).isEmpty());
+        assertTrue(reopened.getAlbum(album.id()).shares().isEmpty());
+        assertStatus(HttpStatus.NOT_FOUND, () -> reopened.sharedAlbum(link.token()));
+        assertStatus(HttpStatus.NOT_FOUND, () -> reopened.updateShare(album.id(), link.token(),
+                new AlbumController.UpdateShare(later, "Reopened", null)));
+    }
+
+    @Test
+    void sharingHistoryKeepsExpiredEntriesAfterTokenCleanup() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        var link = controller.createShare(album.id(), new AlbumController.CreateShare(1, AlbumController.DurationUnit.DAYS));
+        Instant expired = Instant.now().minusSeconds(60);
+        // Model time passing, followed by DynamoDB TTL deleting the access token.
+        repository.putMetadata(album.id(), "SHARE_HISTORY#" + link.token(), PhotoHistory.JSON.writeValueAsString(
+                new AlbumController.ShareHistoryResponse(link.token(), expired, "", "", null)));
+        repository.deleteShare(link.token());
+
+        var entries = controller.shareHistory(album.id());
+        assertEquals(1, entries.size());
+        assertEquals(expired, entries.getFirst().expiresAt());
+        assertNull(entries.getFirst().revokedAt());
+        assertTrue(controller.listShares(album.id()).isEmpty());
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.sharedAlbum(link.token()));
+    }
+
+    @Test
+    void sharingHistoryIncludesLegacyLinksAndRejectsMissingAlbums() {
+        var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
+        Instant expires = Instant.now().plusSeconds(3600);
+        repository.saveShare("legacy-link", new AlbumController.Share(album.id(), expires));
+        var entries = controller.shareHistory(album.id());
+        assertEquals(1, entries.size());
+        assertEquals("legacy-link", entries.getFirst().token());
+        assertEquals(expires, entries.getFirst().expiresAt());
+        assertStatus(HttpStatus.NOT_FOUND, () -> controller.shareHistory(UUID.randomUUID()));
+    }
+
+    @Test
     void emailSharingIsRefusedWhileDisabledButLabelledLinksWork() {
         var album = controller.createAlbum(new AlbumController.CreateAlbum("Trip", null));
         assertStatus(HttpStatus.FORBIDDEN, () -> controller.createShare(album.id(),

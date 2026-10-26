@@ -533,7 +533,7 @@ export default function PhotoEditor({ item, src, onClose, onSaved }) {
 
         {tab === 'adjust' && <>
           <Slider key={active} label={activeDef.label} value={edit.adjust[active]} min={activeDef.min} max={activeDef.max} onChange={v => setAdjust(active, v)} onReset={() => setAdjust(active, 0)} />
-          <OverflowTools className="ed-strip" role="group" aria-label="Adjustments">
+          <OverflowTools className="ed-strip ed-adjustments" role="group" aria-label="Adjustments">
             {ADJUSTMENTS.map(a => {
               const Icon = ICONS[a.key]
               const value = edit.adjust[a.key]
